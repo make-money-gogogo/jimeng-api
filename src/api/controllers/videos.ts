@@ -9,7 +9,7 @@ import util from "@/lib/util.ts";
 import { getCredit, receiveCredit, request, parseRegionFromToken, getAssistantId, checkImageContent, RegionInfo } from "./core.ts";
 import logger from "@/lib/logger.ts";
 import { SmartPoller, PollingStatus } from "@/lib/smart-poller.ts";
-import { DEFAULT_ASSISTANT_ID_CN, DEFAULT_ASSISTANT_ID_US, DEFAULT_ASSISTANT_ID_HK, DEFAULT_ASSISTANT_ID_JP, DEFAULT_ASSISTANT_ID_SG, DEFAULT_VIDEO_MODEL, DRAFT_VERSION, DRAFT_VERSION_OMNI, OMNI_BENEFIT_TYPE, OMNI_BENEFIT_TYPE_FAST, VIDEO_MODEL_MAP, VIDEO_MODEL_MAP_US, VIDEO_MODEL_MAP_ASIA } from "@/api/consts/common.ts";
+import { DEFAULT_ASSISTANT_ID_CN, DEFAULT_ASSISTANT_ID_US, DEFAULT_ASSISTANT_ID_HK, DEFAULT_ASSISTANT_ID_JP, DEFAULT_ASSISTANT_ID_SG, DEFAULT_VIDEO_MODEL, DRAFT_VERSION, DRAFT_VERSION_OMNI, OMNI_BENEFIT_TYPE, OMNI_BENEFIT_TYPE_FAST, VIDEO_MODEL_MAP, VIDEO_MODEL_MAP_US, VIDEO_MODEL_MAP_ASIA, STATUS_CODE_MAP } from "@/api/consts/common.ts";
 import { uploadImageBuffer, ImageUploadResult } from "@/lib/image-uploader.ts";
 import { uploadVideoBuffer, VideoUploadResult } from "@/lib/video-uploader.ts";
 import { extractVideoUrl, fetchHighQualityVideoUrl } from "@/lib/image-utils.ts";
@@ -144,16 +144,132 @@ function parseOmniPrompt(prompt: string, materialRegistry: Map<string, any>): an
 }
 
 
+export type VideoGenerationOptions = {
+  ratio?: string;
+  resolution?: string;
+  duration?: number;
+  filePaths?: string[];
+  files?: any;
+  httpRequest?: any;
+  functionMode?: string;
+};
+
 /**
- * 生成视频
- *
- * @param _model 模型名称
- * @param prompt 提示词
- * @param options 选项
- * @param refreshToken 刷新令牌
- * @returns 视频URL
+ * 仅提交视频生成任务（不轮询），供 body.async=true 使用。
  */
-export async function generateVideo(
+export async function submitVideoGenerationAsync(
+  _model: string,
+  prompt: string,
+  options: VideoGenerationOptions,
+  refreshToken: string
+): Promise<{ id: string }> {
+  const id = await submitVideoDraftAndGetHistoryId(_model, prompt, options, refreshToken);
+  return { id };
+}
+
+/**
+ * 单次查询视频任务状态（get_history_by_ids），尽力解析视频 URL。
+ */
+export async function queryVideoGenerationStatus(
+  historyId: string,
+  refreshToken: string
+): Promise<{
+  id: string;
+  object: "video_generation_job";
+  status: "queued" | "processing" | "succeeded" | "failed";
+  upstream_status: number | null;
+  upstream_status_name: string | null;
+  fail_code: string | null;
+  item_count: number;
+  url: string | null;
+  data: { url: string }[];
+}> {
+  const result = await request("post", "/mweb/v1/get_history_by_ids", refreshToken, {
+    data: { history_ids: [historyId] },
+  });
+
+  if (!result[historyId]) {
+    return {
+      id: historyId,
+      object: "video_generation_job",
+      status: "queued",
+      upstream_status: null,
+      upstream_status_name: null,
+      fail_code: null,
+      item_count: 0,
+      url: null,
+      data: [],
+    };
+  }
+
+  const historyData = result[historyId];
+  const st = historyData.status as number;
+  const item_list = historyData.item_list || [];
+  const statusName = (STATUS_CODE_MAP as Record<number, string>)[st] ?? null;
+
+  if (st === 30) {
+    return {
+      id: historyId,
+      object: "video_generation_job",
+      status: "failed",
+      upstream_status: st,
+      upstream_status_name: statusName,
+      fail_code: historyData.fail_code ?? null,
+      item_count: item_list.length,
+      url: null,
+      data: [],
+    };
+  }
+
+  const itemId =
+    item_list?.[0]?.item_id ||
+    item_list?.[0]?.id ||
+    item_list?.[0]?.local_item_id ||
+    item_list?.[0]?.common_attr?.id;
+
+  let url: string | null = null;
+  if (itemId) {
+    try {
+      url = await fetchHighQualityVideoUrl(String(itemId), refreshToken);
+    } catch (e: any) {
+      logger.debug(`queryVideoGenerationStatus: 高清 URL 失败: ${e?.message}`);
+    }
+  }
+  if (!url && item_list[0]) {
+    url = extractVideoUrl(item_list[0]);
+  }
+
+  if ((st === 10 || st === 50) && url) {
+    return {
+      id: historyId,
+      object: "video_generation_job",
+      status: "succeeded",
+      upstream_status: st,
+      upstream_status_name: statusName,
+      fail_code: null,
+      item_count: item_list.length,
+      url,
+      data: [{ url }],
+    };
+  }
+
+  return {
+    id: historyId,
+    object: "video_generation_job",
+    status: "processing",
+    upstream_status: st,
+    upstream_status_name: statusName,
+    fail_code: historyData.fail_code ?? null,
+    item_count: item_list.length,
+    url,
+    data: url ? [{ url }] : [],
+  };
+}
+
+/**
+ * 向即梦提交视频草稿并返回 history_record_id（内部复用）。
+ */
+async function submitVideoDraftAndGetHistoryId(
   _model: string,
   prompt: string,
   {
@@ -164,17 +280,9 @@ export async function generateVideo(
     files = {},
     httpRequest,
     functionMode = "first_last_frames",
-  }: {
-    ratio?: string;
-    resolution?: string;
-    duration?: number;
-    filePaths?: string[];
-    files?: any;
-    httpRequest?: any;
-    functionMode?: string;
-  },
+  }: VideoGenerationOptions,
   refreshToken: string
-) {
+): Promise<string> {
   // 检测区域
   const regionInfo = parseRegionFromToken(refreshToken);
   const { isInternational } = regionInfo;
@@ -862,6 +970,19 @@ export async function generateVideo(
     throw new APIException(EX.API_IMAGE_GENERATION_FAILED, "记录ID不存在");
 
   logger.info(`视频生成任务已提交，history_id: ${historyId}，等待生成完成...`);
+  return historyId;
+}
+
+/**
+ * 生成视频（同步轮询直至可下载 URL）
+ */
+export async function generateVideo(
+  _model: string,
+  prompt: string,
+  options: VideoGenerationOptions,
+  refreshToken: string
+) {
+  const historyId = await submitVideoDraftAndGetHistoryId(_model, prompt, options, refreshToken);
 
   // 首次查询前等待，让服务器有时间处理请求
   await new Promise((resolve) => setTimeout(resolve, 5000));

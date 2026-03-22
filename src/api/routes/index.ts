@@ -20,6 +20,7 @@ export default [
                         images_async_status: '/v1/images/generations/status',
                         compositions: '/v1/images/compositions',
                         videos: '/v1/videos/generations',
+                        videos_async_status: '/v1/videos/generations/status',
                         models: '/v1/models',
                         health: '/ping'
                     }

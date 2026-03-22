@@ -1,16 +1,39 @@
 import _ from 'lodash';
 
 import Request from '@/lib/request/Request.ts';
-import Response from '@/lib/response/Response.ts';
 import { tokenSplit } from '@/api/controllers/core.ts';
-import { generateVideo, DEFAULT_MODEL } from '@/api/controllers/videos.ts';
+import {
+    generateVideo,
+    submitVideoGenerationAsync,
+    queryVideoGenerationStatus,
+    DEFAULT_MODEL,
+} from '@/api/controllers/videos.ts';
 import util from '@/lib/util.ts';
+
+function isAsyncFlag(v: unknown): boolean {
+    return v === true || v === 'true';
+}
 
 export default {
 
     prefix: '/v1/videos',
 
     post: {
+
+        '/generations/status': async (request: Request) => {
+            request
+                .validate('body.id', _.isString)
+                .validate('headers.authorization', _.isString);
+
+            const tokens = tokenSplit(request.headers.authorization);
+            const token = _.sample(tokens);
+            const { id } = request.body;
+            const result = await queryVideoGenerationStatus(id, token);
+            return {
+                created: util.unixTimestamp(),
+                ...result,
+            };
+        },
 
         '/generations': async (request: Request) => {
             const contentType = request.headers['content-type'] || '';
@@ -23,6 +46,7 @@ export default {
                 .validate('body.resolution', v => _.isUndefined(v) || _.isString(v))
                 .validate('body.functionMode', v => _.isUndefined(v) || (_.isString(v) && ['first_last_frames', 'omni_reference'].includes(v)))
                 .validate('body.response_format', v => _.isUndefined(v) || _.isString(v))
+                .validate('body.async', v => _.isUndefined(v) || _.isBoolean(v) || (typeof v === 'string' && (v === 'true' || v === 'false')))
                 .validate('headers.authorization', _.isString);
 
             const functionMode = request.body.functionMode || 'first_last_frames';
@@ -149,7 +173,8 @@ export default {
                 duration = 5,
                 file_paths = [],
                 filePaths = [],
-                response_format = "url"
+                response_format = "url",
+                async: asyncFlag,
             } = request.body;
 
             // 如果是 multipart/form-data，需要将字符串转换为数字
@@ -159,6 +184,28 @@ export default {
 
             // 兼容两种参数名格式：file_paths 和 filePaths
             const finalFilePaths = filePaths.length > 0 ? filePaths : file_paths;
+
+            if (isAsyncFlag(asyncFlag)) {
+                const job = await submitVideoGenerationAsync(
+                    model,
+                    prompt,
+                    {
+                        ratio,
+                        resolution,
+                        duration: finalDuration,
+                        filePaths: finalFilePaths,
+                        files: request.files,
+                        httpRequest: request,
+                        functionMode,
+                    },
+                    token
+                );
+                return {
+                    created: util.unixTimestamp(),
+                    object: 'video_generation_job',
+                    id: job.id,
+                };
+            }
 
             // 生成视频
             const generatedVideoUrl = await generateVideo(
