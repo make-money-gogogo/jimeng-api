@@ -427,8 +427,11 @@ export async function request(
           logger.info(`响应数据摘要: ${summary}`);
           return checkJimengResponseBody(raw);
         } catch (browserErr: unknown) {
+          // 业务级错误（APIException）= 服务端已响应并返回非0 ret，例如 1310 高峰期限流、1015 登录失效等。
+          // 这类错误与 shark 绕过无关，回退 axios 只会用不同参数重发并得到无意义的 ret=1000；直接上抛。
+          if (browserErr instanceof APIException) throw browserErr;
           const msg = browserErr instanceof Error ? browserErr.message : String(browserErr);
-          logger.warn(`[shark-browser] 失败，回退 axios: ${msg}`);
+          logger.warn(`[shark-browser] 浏览器技术故障，回退 axios: ${msg}`);
         }
       }
 

@@ -1,8 +1,9 @@
-import Response from '@/lib/response/Response.ts';
+import environment from '@/lib/environment.ts';
 import images from "./images.ts";
 import ping from "./ping.ts";
 import token from './token.js';
 import models from './models.ts';
+import documentation from "./documentation.ts";
 import videos from './videos.ts';
 
 export default [
@@ -12,10 +13,12 @@ export default [
                 return {
                     service: 'jimeng-api',
                     status: 'running',
-                    version: '1.6.3',
-                    description: '免费的AI图像和视频生成API服务 - 基于即梦AI的逆向工程实现',
-                    documentation: 'https://github.com/iptag/jimeng-api',
+                    version: environment.package.version,
+                    description: '图像与视频能力 HTTP 服务（部分接口兼容 OpenAI 风格）',
+                    documentation: '/v1/docs',
                     endpoints: {
+                        docs: '/v1/docs',
+                        docs_markdown: '/v1/docs?format=markdown',
                         images: '/v1/images/generations',
                         images_async_status: '/v1/images/generations/status',
                         compositions: '/v1/images/compositions',
@@ -32,5 +35,6 @@ export default [
     ping,
     token,
     models,
+    documentation,
     videos
 ];

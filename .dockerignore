@@ -21,6 +21,7 @@ exclude_list.txt
 # 文档和说明
 README.md
 *.md
+!API.md
 doc
 docs
 

@@ -1,7 +1,7 @@
 {
   "name": "jimeng-api",
   "version": "1.0.0",
-  "description": "免费的AI图像和视频生成API服务 - 基于即梦AI的逆向工程实现，提供与OpenAI API兼容的接口格式",
+  "description": "免费的AI图像和视频生成API服务，提供与OpenAI API兼容的接口格式",
   "type": "module",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -16,6 +16,9 @@
     "dev": "tsup src/index.ts --format cjs,esm --sourcemap --dts --watch --external playwright-core --onSuccess \"node --enable-source-maps --no-node-snapshot dist/index.js\"",
     "start": "node --enable-source-maps --no-node-snapshot dist/index.js",
     "build": "tsup src/index.ts --format cjs,esm --sourcemap --dts --clean --external playwright-core",
+    "build:share": "tsup src/index.ts --format cjs,esm --dts --clean --external playwright-core --minify && node scripts/obfuscate-share.mjs",
+    "pack:docker-share": "npm run build && bash scripts/pack-docker-share.sh",
+    "sync:dist": "npm run build:share && node scripts/make-share-package-json.mjs && bash -c 'D=docker-share; rsync -a --delete dist/ $D/dist/ && rsync -a --delete configs/ $D/configs/ && cp -f API.md $D/ && echo dist synced to $D'",
     "test": "echo \"Error: no test specified\" && exit 1",
     "format": "prettier --write \"src/**/*.{ts,js,json}\"",
     "type-check": "tsc --noEmit"
@@ -67,6 +70,7 @@
   "devDependencies": {
     "@types/lodash": "^4.14.202",
     "@types/mime": "^3.0.4",
+    "javascript-obfuscator": "^5.4.0",
     "tsup": "^8.0.2",
     "typescript": "^5.3.3"
   }
