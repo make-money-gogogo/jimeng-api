@@ -58,3 +58,5 @@ temp/
 jimeng-*.md
 scripts/
 .ace-tool/
+
+*.har

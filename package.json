@@ -13,9 +13,9 @@
     "dist/"
   ],
   "scripts": {
-    "dev": "tsup src/index.ts --format cjs,esm --sourcemap --dts --watch --onSuccess \"node --enable-source-maps --no-node-snapshot dist/index.js\"",
+    "dev": "tsup src/index.ts --format cjs,esm --sourcemap --dts --watch --external playwright-core --onSuccess \"node --enable-source-maps --no-node-snapshot dist/index.js\"",
     "start": "node --enable-source-maps --no-node-snapshot dist/index.js",
-    "build": "tsup src/index.ts --format cjs,esm --sourcemap --dts --clean",
+    "build": "tsup src/index.ts --format cjs,esm --sourcemap --dts --clean --external playwright-core",
     "test": "echo \"Error: no test specified\" && exit 1",
     "format": "prettier --write \"src/**/*.{ts,js,json}\"",
     "type-check": "tsc --noEmit"
@@ -44,6 +44,7 @@
     "crc-32": "^1.2.2",
     "cron": "^3.1.6",
     "date-fns": "^3.3.1",
+    "dotenv": "^17.3.1",
     "eventsource-parser": "^1.1.2",
     "form-data": "^4.0.0",
     "fs-extra": "^11.2.0",
@@ -56,6 +57,7 @@
     "lodash": "^4.17.21",
     "mime": "^4.0.1",
     "minimist": "^1.2.8",
+    "playwright-core": "^1.58.2",
     "randomstring": "^1.3.0",
     "semver": "^7.7.2",
     "socks-proxy-agent": "^8.0.5",

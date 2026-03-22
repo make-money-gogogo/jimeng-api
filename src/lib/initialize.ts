@@ -17,12 +17,21 @@ process.on("exit", () => {
     logger.info("Service exit");
     logger.footer();
 });
+async function shutdownBrowserIfAny() {
+    try {
+        const { shutdownJimengBrowser } = await import("@/lib/jimeng-browser-service.ts");
+        await shutdownJimengBrowser();
+    } catch {
+        // 未启用 playwright 或模块不可用时忽略
+    }
+}
+
 // 进程被kill
 process.on("SIGTERM", () => {
     logger.warn("received kill signal");
-    process.exit(2);
+    void shutdownBrowserIfAny().finally(() => process.exit(2));
 });
 // Ctrl-C进程退出
 process.on("SIGINT", () => {
-    process.exit(0);
+    void shutdownBrowserIfAny().finally(() => process.exit(0));
 });

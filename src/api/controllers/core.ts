@@ -12,6 +12,7 @@ import util from "@/lib/util.ts";
 import { JimengErrorHandler, JimengErrorResponse } from "@/lib/error-handler.ts";
 import { BASE_URL_DREAMINA_US, BASE_URL_DREAMINA_HK, DA_VERSION, WEB_VERSION } from "@/api/consts/dreamina.ts";
 
+import { isJimengBrowserGenerateEnvEnabled } from "@/lib/jimeng-browser-flags.ts";
 import {
   BASE_URL_CN,
   BASE_URL_US_COMMERCE,
@@ -40,7 +41,7 @@ const DEVICE_ID = Math.random() * 999999999999999999 + 7000000000000000000;
 const WEB_ID = Math.random() * 999999999999999999 + 7000000000000000000;
 // 用户ID（32位hex，无横线）
 const USER_ID = util.uuid(false);
-// 伪装headers
+// 伪装headers（默认 Windows Chrome；与 HAR 一致的可通过 JIMENG_CLIENT_OS=mac）
 const FAKE_HEADERS = {
   Accept: "application/json, text/plain, */*",
   "Accept-Encoding": "gzip, deflate, br, zstd",
@@ -58,6 +59,25 @@ const FAKE_HEADERS = {
   "Sec-Fetch-Site": "same-origin",
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
 };
+
+const MAC_CHROME_HEADERS = {
+  "Sec-Ch-Ua": '"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"',
+  "Sec-Ch-Ua-Platform": '"macOS"',
+  "User-Agent":
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+};
+
+function clientFingerprintHeaders(): Record<string, string> {
+  return process.env.JIMENG_CLIENT_OS === "mac" ? MAC_CHROME_HEADERS : {};
+}
+
+/** 国内站 URL 反爬参数：与浏览器 HAR 中 msToken、a_bogus 一致，需从已登录页面 Network 复制（短期有效） */
+function cnAntiBotQueryParams(): Record<string, string> {
+  const q: Record<string, string> = {};
+  if (process.env.JIMENG_MS_TOKEN) q.msToken = process.env.JIMENG_MS_TOKEN;
+  if (process.env.JIMENG_A_BOGUS) q.a_bogus = process.env.JIMENG_A_BOGUS;
+  return q;
+}
 // 文件最大大小
 const FILE_MAX_SIZE = 100 * 1024 * 1024;
 
@@ -286,21 +306,24 @@ export async function request(
   const origin = new URL(baseUrl).origin;
 
   const fullUrl = `${baseUrl}${uri}`;
+  const clientOs = process.env.JIMENG_CLIENT_OS === "mac" ? "mac" : "windows";
   const requestParams = options.noDefaultParams ? (options.params || {}) : {
     aid: aid,
     device_platform: "web",
     region: region,
     ...(isUS || isHK || isJP || isSG ? {} : { webId: WEB_ID }),
     da_version: DA_VERSION,
-    os: "windows",
+    os: clientOs,
     web_component_open_flag: 1,
     web_version: WEB_VERSION,
     aigc_features: "app_lip_sync",
+    ...(isUS || isHK || isJP || isSG ? {} : cnAntiBotQueryParams()),
     ...(options.params || {}),
   };
 
   const headers = {
     ...FAKE_HEADERS,
+    ...clientFingerprintHeaders(),
     Origin: origin,
     Referer: origin,
     "App-Sdk-Version": "48.0.0",
@@ -340,6 +363,73 @@ export async function request(
         logger.info(`第 ${retries} 次重试请求: ${method.toUpperCase()} ${fullUrl}`);
         // 重试前等待一段时间
         await new Promise(resolve => setTimeout(resolve, RETRY_CONFIG.RETRY_DELAY));
+      }
+
+      const isGenerateDraftPost =
+        String(method).toLowerCase() === "post" &&
+        uri === "/mweb/v1/aigc_draft/generate" &&
+        options.responseType !== "stream";
+
+      const useSharkBrowser =
+        isJimengBrowserGenerateEnvEnabled() &&
+        regionInfo.isCN &&
+        isGenerateDraftPost &&
+        !proxyUrl;
+
+      if (isJimengBrowserGenerateEnvEnabled() && isGenerateDraftPost) {
+        if (!regionInfo.isCN) {
+          logger.warn(
+            "[shark-browser] 已开启 JIMENG_BROWSER_GENERATE，但当前 token 为海外前缀(us-/hk-/jp-/sg-)，浏览器通道仅国内站启用，本次仍走 axios"
+          );
+        } else if (proxyUrl) {
+          logger.warn(
+            "[shark-browser] 已开启 JIMENG_BROWSER_GENERATE，但 token 含代理前缀(proxy@…)，浏览器通道未走代理，本次仍走 axios；可改用「无代理的纯 sessionid」试 Chromium"
+          );
+        }
+      }
+
+      if (useSharkBrowser) {
+        try {
+          logger.info(
+            "[shark-browser] 使用 Playwright 提交生成（默认无头不弹窗；调试设 JIMENG_BROWSER_HEADLESS=0）"
+          );
+          const { jimengBrowserService } = await import("@/lib/jimeng-browser-service.ts");
+          // 与 seedance2.0 一致：query 不含 msToken/a_bogus（由页面脚本注入）；且不含 os（seedance generate URL 无此项）
+          const urlParams = { ...requestParams } as Record<string, unknown>;
+          delete urlParams.msToken;
+          delete urlParams.a_bogus;
+          delete urlParams.os;
+          const browserUrl = new URL(fullUrl);
+          for (const [k, v] of Object.entries(urlParams)) {
+            if (v === undefined || v === null) continue;
+            browserUrl.searchParams.set(k, String(v));
+          }
+          // 与 seedance2.0 一致：页面内 fetch 只带 Content-Type，不携带 Node 侧 Sign/Device-Time/User-Agent 等，
+          // 否则易与 bdms 改写后的请求不一致，触发风控 ret=4013「异常行为」
+          const fetchHeaders: Record<string, string> = {
+            "Content-Type": "application/json",
+          };
+          const sessionIdForBrowser = (isUS || isHK || isJP || isSG)
+            ? tokenWithRegion.substring(3)
+            : tokenWithRegion;
+          const raw = await jimengBrowserService.fetchJimengGenerate({
+            sessionKey: sessionIdForBrowser,
+            sessionId: sessionIdForBrowser,
+            webId: String(WEB_ID),
+            userId: USER_ID,
+            url: browserUrl.toString(),
+            headers: fetchHeaders,
+            body: options.data !== undefined ? JSON.stringify(options.data) : undefined,
+          });
+          logger.info("响应状态: 200 (shark-browser)");
+          const summary = JSON.stringify(raw).substring(0, 500) +
+            (JSON.stringify(raw).length > 500 ? "..." : "");
+          logger.info(`响应数据摘要: ${summary}`);
+          return checkJimengResponseBody(raw);
+        } catch (browserErr: unknown) {
+          const msg = browserErr instanceof Error ? browserErr.message : String(browserErr);
+          logger.warn(`[shark-browser] 失败，回退 axios: ${msg}`);
+        }
       }
 
       const response = await axios.request({
@@ -623,21 +713,22 @@ export async function uploadFile(
   }
 }
 
-/**
- * 检查请求结果
- *
- * @param result 结果
- */
-export function checkResult(result: AxiosResponse) {
-  const { ret, errmsg, data } = result.data;
-  if (!_.isFinite(Number(ret))) return result.data;
-  if (ret === '0') return data;
+/** 解析即梦 JSON 业务层 ret（axios 与 shark-browser 共用） */
+export function checkJimengResponseBody(body: unknown) {
+  if (body === null || typeof body !== "object") return body;
+  const { ret, data } = body as { ret?: string | number; data?: unknown };
+  if (!_.isFinite(Number(ret))) return body;
+  if (ret === "0" || ret === 0) return data;
 
-  // 使用统一错误处理器
-  JimengErrorHandler.handleApiResponse(result.data as JimengErrorResponse, {
-    context: '即梦API请求',
-    operation: '请求'
+  JimengErrorHandler.handleApiResponse(body as JimengErrorResponse, {
+    context: "即梦API请求",
+    operation: "请求",
   });
+}
+
+/** 检查 axios 响应体（内部转调 {@link checkJimengResponseBody}） */
+export function checkResult(result: AxiosResponse) {
+  return checkJimengResponseBody(result.data);
 }
 
 /**
