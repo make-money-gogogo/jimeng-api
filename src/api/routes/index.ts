@@ -17,6 +17,7 @@ export default [
                     documentation: 'https://github.com/iptag/jimeng-api',
                     endpoints: {
                         images: '/v1/images/generations',
+                        images_async_status: '/v1/images/generations/status',
                         compositions: '/v1/images/compositions',
                         videos: '/v1/videos/generations',
                         models: '/v1/models',

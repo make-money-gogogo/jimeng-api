@@ -6,7 +6,7 @@ import util from "@/lib/util.ts";
 import { getCredit, receiveCredit, request, parseRegionFromToken, getAssistantId, checkImageContent, RegionInfo } from "./core.ts";
 import logger from "@/lib/logger.ts";
 import { SmartPoller, PollingStatus } from "@/lib/smart-poller.ts";
-import { DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_MODEL_US, IMAGE_MODEL_MAP, IMAGE_MODEL_MAP_US, IMAGE_MODEL_MAP_ASIA } from "@/api/consts/common.ts";
+import { DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_MODEL_US, IMAGE_MODEL_MAP, IMAGE_MODEL_MAP_US, IMAGE_MODEL_MAP_ASIA, STATUS_CODE_MAP } from "@/api/consts/common.ts";
 import { uploadImageFromUrl, uploadImageBuffer } from "@/lib/image-uploader.ts";
 import { extractImageUrls } from "@/lib/image-utils.ts";
 import {
@@ -648,6 +648,423 @@ async function generateJimeng4xMultiImages(
   return imageUrls;
 }
 
+/** 与 get_history_by_ids 轮询一致；查询时必须与创建任务时的 job_kind 相同 */
+export type ImageJobKind = "text2img" | "text2img_multi" | "img2img";
+
+const HISTORY_IMAGE_INFO_TEXT2IMG = {
+  width: 2048,
+  height: 2048,
+  format: "webp",
+  image_scene_list: [
+    { scene: "smart_crop", width: 360, height: 360, uniq_key: "smart_crop-w:360-h:360", format: "webp" },
+    { scene: "smart_crop", width: 480, height: 480, uniq_key: "smart_crop-w:480-h:480", format: "webp" },
+    { scene: "smart_crop", width: 720, height: 720, uniq_key: "smart_crop-w:720-h:720", format: "webp" },
+    { scene: "smart_crop", width: 720, height: 480, uniq_key: "smart_crop-w:720-h:480", format: "webp" },
+    { scene: "smart_crop", width: 360, height: 240, uniq_key: "smart_crop-w:360-h:240", format: "webp" },
+    { scene: "smart_crop", width: 240, height: 320, uniq_key: "smart_crop-w:240-h:320", format: "webp" },
+    { scene: "smart_crop", width: 480, height: 640, uniq_key: "smart_crop-w:480-h:640", format: "webp" },
+    { scene: "normal", width: 2400, height: 2400, uniq_key: "2400", format: "webp" },
+    { scene: "normal", width: 1080, height: 1080, uniq_key: "1080", format: "webp" },
+    { scene: "normal", width: 720, height: 720, uniq_key: "720", format: "webp" },
+    { scene: "normal", width: 480, height: 480, uniq_key: "480", format: "webp" },
+    { scene: "normal", width: 360, height: 360, uniq_key: "360", format: "webp" },
+  ],
+};
+
+const HISTORY_IMAGE_INFO_MULTI = {
+  width: 2048,
+  height: 2048,
+  format: "webp",
+  image_scene_list: [
+    { scene: "smart_crop", width: 360, height: 360, uniq_key: "smart_crop-w:360-h:360", format: "webp" },
+    { scene: "smart_crop", width: 480, height: 480, uniq_key: "smart_crop-w:480-h:480", format: "webp" },
+    { scene: "smart_crop", width: 720, height: 720, uniq_key: "smart_crop-w:720-h:720", format: "webp" },
+    { scene: "smart_crop", width: 720, height: 480, uniq_key: "smart_crop-w:720-h:480", format: "webp" },
+    { scene: "normal", width: 2400, height: 2400, uniq_key: "2400", format: "webp" },
+    { scene: "normal", width: 1080, height: 1080, uniq_key: "1080", format: "webp" },
+    { scene: "normal", width: 720, height: 720, uniq_key: "720", format: "webp" },
+    { scene: "normal", width: 480, height: 480, uniq_key: "480", format: "webp" },
+    { scene: "normal", width: 360, height: 360, uniq_key: "360", format: "webp" },
+  ],
+};
+
+const HISTORY_IMAGE_INFO_IMG2IMG = {
+  width: 2048,
+  height: 2048,
+  format: "webp",
+  image_scene_list: [
+    { scene: "smart_crop", width: 360, height: 360, uniq_key: "smart_crop-w:360-h:360", format: "webp" },
+    { scene: "smart_crop", width: 480, height: 480, uniq_key: "smart_crop-w:480-h:480", format: "webp" },
+    { scene: "smart_crop", width: 720, height: 720, uniq_key: "smart_crop-w:720-h:720", format: "webp" },
+    { scene: "smart_crop", width: 720, height: 480, uniq_key: "smart_crop-w:720-h:480", format: "webp" },
+    { scene: "normal", width: 2400, height: 2400, uniq_key: "2400", format: "webp" },
+    { scene: "normal", width: 1080, height: 1080, uniq_key: "1080", format: "webp" },
+    { scene: "normal", width: 720, height: 720, uniq_key: "720", format: "webp" },
+    { scene: "normal", width: 480, height: 480, uniq_key: "480", format: "webp" },
+    { scene: "normal", width: 360, height: 360, uniq_key: "360", format: "webp" },
+  ],
+};
+
+function buildImageHistoryQueryPayload(historyIds: string[], kind: ImageJobKind) {
+  const image_info =
+    kind === "text2img"
+      ? HISTORY_IMAGE_INFO_TEXT2IMG
+      : kind === "text2img_multi"
+        ? HISTORY_IMAGE_INFO_MULTI
+        : HISTORY_IMAGE_INFO_IMG2IMG;
+  return {
+    history_ids: historyIds,
+    image_info: {
+      ...image_info,
+      image_scene_list: [...image_info.image_scene_list],
+    },
+  };
+}
+
+/**
+ * 仅提交文生图（不轮询），供 body.async=true 使用。
+ */
+export async function submitImageGenerationAsync(
+  _model: string,
+  prompt: string,
+  {
+    ratio = "1:1",
+    resolution = "2k",
+    sampleStrength = 0.5,
+    negativePrompt = "",
+    intelligentRatio = false,
+  }: {
+    ratio?: string;
+    resolution?: string;
+    sampleStrength?: number;
+    negativePrompt?: string;
+    intelligentRatio?: boolean;
+  },
+  refreshToken: string
+): Promise<{ id: string; job_kind: ImageJobKind; expected_image_count: number }> {
+  const regionInfo = parseRegionFromToken(refreshToken);
+  const { model, userModel } = getModel(_model, regionInfo);
+  const resolutionResult = resolveResolution(userModel, regionInfo, resolution, ratio);
+  logResolutionInfo(userModel, resolutionResult, regionInfo);
+
+  const { totalCredit, giftCredit, purchaseCredit, vipCredit } = await getCredit(refreshToken);
+  if (totalCredit <= 0) {
+    logger.info("积分为 0，尝试收取今日积分...");
+    try {
+      await receiveCredit(refreshToken);
+      logger.info("积分收取成功，继续生成图片");
+    } catch (receiveError) {
+      logger.warn(`收取积分失败: ${receiveError.message}. 这可能是因为: 1) 今日已收取过积分, 2) 账户受到风控限制, 3) 需要在官网手动收取首次积分`);
+      throw new APIException(
+        EX.API_IMAGE_GENERATION_INSUFFICIENT_POINTS,
+        `积分不足且无法自动收取。请访问即梦官网手动收取首次积分，或检查账户状态。`
+      );
+    }
+  } else {
+    logger.info(`当前积分状态: 总计=${totalCredit}, 赠送=${giftCredit}, 购买=${purchaseCredit}, VIP=${vipCredit}`);
+  }
+
+  const isJimeng4xMultiImage =
+    ["jimeng-4.0", "jimeng-4.1", "jimeng-4.5"].includes(userModel) &&
+    (prompt.includes("连续") || prompt.includes("绘本") || prompt.includes("故事") || /\d+张/.test(prompt));
+
+  const imageReferer = regionInfo.isCN
+    ? "https://jimeng.jianying.com/ai-tool/generate?type=image"
+    : "https://dreamina.capcut.com/ai-tool/generate?type=image";
+
+  if (isJimeng4xMultiImage) {
+    const targetImageCount = prompt.match(/(\d+)张/) ? parseInt(prompt.match(/(\d+)张/)![1]) : 4;
+    const componentId = util.uuid();
+    const submitId = util.uuid();
+    const coreParam = buildCoreParam({
+      userModel,
+      model,
+      prompt,
+      negativePrompt,
+      seed: Math.floor(Math.random() * 100000000) + 2500000000,
+      sampleStrength,
+      resolution: resolutionResult,
+      intelligentRatio,
+      mode: "text2img",
+    });
+    const metricsExtra = buildMetricsExtra({
+      userModel,
+      model,
+      regionInfo,
+      submitId,
+      scene: "ImageMultiGenerate",
+      resolutionType: resolutionResult.resolutionType,
+      abilityList: [],
+      isMultiImage: true,
+    });
+    const draftContent = buildDraftContent({
+      componentId,
+      generateType: "generate",
+      coreParam,
+    });
+    const requestData = buildGenerateRequest({
+      model,
+      regionInfo,
+      submitId,
+      draftContent,
+      metricsExtra,
+    });
+    const { aigc_data } = await request("post", "/mweb/v1/aigc_draft/generate", refreshToken, {
+      data: requestData,
+      headers: { Referer: imageReferer },
+    });
+    const historyId = aigc_data?.history_record_id;
+    if (!historyId) throw new APIException(EX.API_IMAGE_GENERATION_FAILED, "记录ID不存在");
+    logger.info(`[async] 多图任务已提交 history_id=${historyId}`);
+    return { id: historyId, job_kind: "text2img_multi", expected_image_count: targetImageCount };
+  }
+
+  const componentId = util.uuid();
+  const submitId = util.uuid();
+  const coreParam = buildCoreParam({
+    userModel,
+    model,
+    prompt,
+    negativePrompt,
+    seed: Math.floor(Math.random() * 100000000) + 2500000000,
+    sampleStrength,
+    resolution: resolutionResult,
+    intelligentRatio,
+    mode: "text2img",
+  });
+  const metricsExtra = buildMetricsExtra({
+    userModel,
+    model,
+    regionInfo,
+    submitId,
+    scene: "ImageBasicGenerate",
+    resolutionType: resolutionResult.resolutionType,
+    abilityList: [],
+  });
+  const draftContent = buildDraftContent({
+    componentId,
+    generateType: "generate",
+    coreParam,
+  });
+  const requestData = buildGenerateRequest({
+    model,
+    regionInfo,
+    submitId,
+    draftContent,
+    metricsExtra,
+  });
+  const { aigc_data } = await request("post", "/mweb/v1/aigc_draft/generate", refreshToken, {
+    data: requestData,
+    headers: { Referer: imageReferer },
+  });
+  const historyId = aigc_data?.history_record_id;
+  if (!historyId) throw new APIException(EX.API_IMAGE_GENERATION_FAILED, "记录ID不存在");
+  logger.info(`[async] 文生图任务已提交 history_id=${historyId}`);
+  return { id: historyId, job_kind: "text2img", expected_image_count: 4 };
+}
+
+/**
+ * 仅提交图生图（不轮询），供 body.async=true 使用。
+ */
+export async function submitImageCompositionAsync(
+  _model: string,
+  prompt: string,
+  images: (string | Buffer)[],
+  {
+    ratio = "1:1",
+    resolution = "2k",
+    sampleStrength = 0.5,
+    negativePrompt = "",
+    intelligentRatio = false,
+  }: {
+    ratio?: string;
+    resolution?: string;
+    sampleStrength?: number;
+    negativePrompt?: string;
+    intelligentRatio?: boolean;
+  },
+  refreshToken: string
+): Promise<{ id: string; job_kind: ImageJobKind; expected_image_count: number }> {
+  const regionInfo = parseRegionFromToken(refreshToken);
+  const { model, userModel } = getModel(_model, regionInfo);
+  const resolutionResult = resolveResolution(userModel, regionInfo, resolution, ratio);
+  logResolutionInfo(userModel, resolutionResult, regionInfo);
+
+  const imageCount = images.length;
+  logger.info(`[async] 图生图提交 ${imageCount} 张图`);
+
+  try {
+    const { totalCredit } = await getCredit(refreshToken);
+    if (totalCredit <= 0) {
+      logger.info("积分为 0，尝试收取今日积分...");
+      try {
+        await receiveCredit(refreshToken);
+      } catch (receiveError) {
+        logger.warn(`收取积分失败: ${receiveError.message}. 这可能是因为: 1) 今日已收取过积分, 2) 账户受到风控限制, 3) 需要在官网手动收取首次积分`);
+      }
+    }
+  } catch (e: any) {
+    logger.warn(`获取积分失败，可能是不支持的区域或token已失效: ${e.message}`);
+  }
+
+  const uploadedImageIds: string[] = [];
+  for (let i = 0; i < images.length; i++) {
+    const image = images[i];
+    let imageId: string;
+    if (typeof image === "string") {
+      imageId = (await uploadImageFromUrl(image, refreshToken, regionInfo)).uri;
+    } else {
+      imageId = (await uploadImageBuffer(image, refreshToken, regionInfo)).uri;
+    }
+    uploadedImageIds.push(imageId);
+    await checkImageContent(imageId, refreshToken, regionInfo);
+  }
+
+  const componentId = util.uuid();
+  const submitId = util.uuid();
+  const coreParam = buildCoreParam({
+    userModel,
+    model,
+    prompt,
+    negativePrompt,
+    imageCount,
+    sampleStrength,
+    resolution: resolutionResult,
+    intelligentRatio,
+    mode: "img2img",
+  });
+  const metricsAbilityList = uploadedImageIds.map(() => ({
+    abilityName: "byte_edit",
+    strength: sampleStrength,
+    source: { imageUrl: `blob:https://dreamina.capcut.com/${util.uuid()}` },
+  }));
+  const metricsExtra = buildMetricsExtra({
+    userModel,
+    model,
+    regionInfo,
+    submitId,
+    scene: "ImageBasicGenerate",
+    resolutionType: resolutionResult.resolutionType,
+    abilityList: metricsAbilityList,
+  });
+  const abilityList = buildBlendAbilityList(uploadedImageIds, sampleStrength);
+  const promptPlaceholderInfoList = buildPromptPlaceholderList(uploadedImageIds.length);
+  const draftContent = buildDraftContent({
+    componentId,
+    generateType: "blend",
+    coreParam,
+    abilityList,
+    promptPlaceholderInfoList,
+    posteditParam: { type: "", id: util.uuid(), generate_type: 0 },
+    imageCount,
+  });
+  const requestData = buildGenerateRequest({
+    model,
+    regionInfo,
+    submitId,
+    draftContent,
+    metricsExtra,
+  });
+  const imageReferer = regionInfo.isCN
+    ? "https://jimeng.jianying.com/ai-tool/generate?type=image"
+    : "https://dreamina.capcut.com/ai-tool/generate?type=image";
+  const { aigc_data } = await request("post", "/mweb/v1/aigc_draft/generate", refreshToken, {
+    data: requestData,
+    headers: { Referer: imageReferer },
+  });
+  const historyId = aigc_data?.history_record_id;
+  if (!historyId) throw new APIException(EX.API_IMAGE_GENERATION_FAILED, "记录ID不存在");
+  logger.info(`[async] 图生图任务已提交 history_id=${historyId}`);
+  return { id: historyId, job_kind: "img2img", expected_image_count: 1 };
+}
+
+/**
+ * 查询异步任务状态（单次 get_history_by_ids，不阻塞）。
+ */
+export async function queryImageGenerationStatus(
+  historyId: string,
+  refreshToken: string,
+  jobKind: ImageJobKind
+): Promise<{
+  id: string;
+  object: "image_generation_job";
+  status: "queued" | "processing" | "succeeded" | "failed";
+  job_kind: ImageJobKind;
+  upstream_status: number | null;
+  upstream_status_name: string | null;
+  fail_code: string | null;
+  item_count: number;
+  data: { url: string }[];
+  urls: string[];
+}> {
+  const response = await request("post", "/mweb/v1/get_history_by_ids", refreshToken, {
+    data: buildImageHistoryQueryPayload([historyId], jobKind),
+  });
+
+  if (!response[historyId]) {
+    return {
+      id: historyId,
+      object: "image_generation_job",
+      status: "queued",
+      job_kind: jobKind,
+      upstream_status: null,
+      upstream_status_name: null,
+      fail_code: null,
+      item_count: 0,
+      data: [],
+      urls: [],
+    };
+  }
+
+  const taskInfo = response[historyId];
+  const st = taskInfo.status as number;
+  const item_list = taskInfo.item_list || [];
+  const urls = extractImageUrls(item_list);
+  const statusName = (STATUS_CODE_MAP as Record<number, string>)[st] ?? null;
+
+  if (st === 30) {
+    return {
+      id: historyId,
+      object: "image_generation_job",
+      status: "failed",
+      job_kind: jobKind,
+      upstream_status: st,
+      upstream_status_name: statusName,
+      fail_code: taskInfo.fail_code ?? null,
+      item_count: item_list.length,
+      data: urls.map((url) => ({ url })),
+      urls,
+    };
+  }
+
+  if ((st === 10 || st === 50) && urls.length > 0) {
+    return {
+      id: historyId,
+      object: "image_generation_job",
+      status: "succeeded",
+      job_kind: jobKind,
+      upstream_status: st,
+      upstream_status_name: statusName,
+      fail_code: null,
+      item_count: item_list.length,
+      data: urls.map((url) => ({ url })),
+      urls,
+    };
+  }
+
+  return {
+    id: historyId,
+    object: "image_generation_job",
+    status: "processing",
+    job_kind: jobKind,
+    upstream_status: st,
+    upstream_status_name: statusName,
+    fail_code: taskInfo.fail_code ?? null,
+    item_count: item_list.length,
+    data: urls.map((url) => ({ url })),
+    urls,
+  };
+}
 
 export default {
   generateImages,

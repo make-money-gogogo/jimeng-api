@@ -2,15 +2,44 @@ import fs from "fs";
 import _ from "lodash";
 
 import Request from "@/lib/request/Request.ts";
-import { generateImages, generateImageComposition } from "@/api/controllers/images.ts";
+import {
+  generateImages,
+  generateImageComposition,
+  submitImageGenerationAsync,
+  submitImageCompositionAsync,
+  queryImageGenerationStatus,
+  type ImageJobKind,
+} from "@/api/controllers/images.ts";
 import { DEFAULT_IMAGE_MODEL } from "@/api/consts/common.ts";
 import { tokenSplit } from "@/api/controllers/core.ts";
 import util from "@/lib/util.ts";
+
+function isAsyncFlag(v: unknown): boolean {
+  return v === true || v === "true";
+}
+
+const JOB_KINDS: ImageJobKind[] = ["text2img", "text2img_multi", "img2img"];
 
 export default {
   prefix: "/v1/images",
 
   post: {
+    "/generations/status": async (request: Request) => {
+      request
+        .validate("body.id", _.isString)
+        .validate("body.job_kind", (v) => _.isString(v) && JOB_KINDS.includes(v as ImageJobKind))
+        .validate("headers.authorization", _.isString);
+
+      const tokens = tokenSplit(request.headers.authorization);
+      const token = _.sample(tokens);
+      const { id, job_kind: jobKind } = request.body;
+      const result = await queryImageGenerationStatus(id, token, jobKind as ImageJobKind);
+      return {
+        created: util.unixTimestamp(),
+        ...result,
+      };
+    },
+
     "/generations": async (request: Request) => {
       const unsupportedParams = ['size', 'width', 'height'];
       const bodyKeys = Object.keys(request.body);
@@ -29,6 +58,7 @@ export default {
         .validate("body.intelligent_ratio", v => _.isUndefined(v) || _.isBoolean(v))
         .validate("body.sample_strength", v => _.isUndefined(v) || _.isFinite(v))
         .validate("body.response_format", v => _.isUndefined(v) || _.isString(v))
+        .validate("body.async", v => _.isUndefined(v) || _.isBoolean(v))
         .validate("headers.authorization", _.isString);
 
       const tokens = tokenSplit(request.headers.authorization);
@@ -42,8 +72,31 @@ export default {
         intelligent_ratio: intelligentRatio,
         sample_strength: sampleStrength,
         response_format,
+        async: asyncFlag,
       } = request.body;
       const finalModel = _.defaultTo(model, DEFAULT_IMAGE_MODEL);
+
+      if (isAsyncFlag(asyncFlag)) {
+        const job = await submitImageGenerationAsync(
+          finalModel,
+          prompt,
+          {
+            ratio,
+            resolution,
+            sampleStrength,
+            negativePrompt,
+            intelligentRatio,
+          },
+          token
+        );
+        return {
+          created: util.unixTimestamp(),
+          object: "image_generation_job",
+          id: job.id,
+          job_kind: job.job_kind,
+          expected_image_count: job.expected_image_count,
+        };
+      }
 
       const responseFormat = _.defaultTo(response_format, "url");
       const imageUrls = await generateImages(finalModel, prompt, {
@@ -91,6 +144,7 @@ export default {
           .validate("body.intelligent_ratio", v => _.isUndefined(v) || (typeof v === 'string' && (v === 'true' || v === 'false')) || _.isBoolean(v))
           .validate("body.sample_strength", v => _.isUndefined(v) || (typeof v === 'string' && !isNaN(parseFloat(v))) || _.isFinite(v))
           .validate("body.response_format", v => _.isUndefined(v) || _.isString(v))
+          .validate("body.async", v => _.isUndefined(v) || _.isBoolean(v) || (typeof v === "string" && (v === "true" || v === "false")))
           .validate("headers.authorization", _.isString);
       } else {
         request
@@ -103,6 +157,7 @@ export default {
           .validate("body.intelligent_ratio", v => _.isUndefined(v) || _.isBoolean(v))
           .validate("body.sample_strength", v => _.isUndefined(v) || _.isFinite(v))
           .validate("body.response_format", v => _.isUndefined(v) || _.isString(v))
+          .validate("body.async", v => _.isUndefined(v) || _.isBoolean(v))
           .validate("headers.authorization", _.isString);
       }
 
@@ -139,9 +194,6 @@ export default {
         images = bodyImages.map((image: any) => _.isString(image) ? image : image.url);
       }
 
-      const tokens = tokenSplit(request.headers.authorization);
-      const token = _.sample(tokens);
-
       const {
         model,
         prompt,
@@ -151,6 +203,7 @@ export default {
         intelligent_ratio: intelligentRatio,
         sample_strength: sampleStrength,
         response_format,
+        async: asyncFlag,
       } = request.body;
       const finalModel = _.defaultTo(model, DEFAULT_IMAGE_MODEL);
 
@@ -162,6 +215,34 @@ export default {
       const finalIntelligentRatio = isMultiPart && typeof intelligentRatio === 'string'
         ? intelligentRatio === 'true'
         : intelligentRatio;
+
+      const tokens = tokenSplit(request.headers.authorization);
+      const token = _.sample(tokens);
+
+      if (isAsyncFlag(asyncFlag)) {
+        const job = await submitImageCompositionAsync(
+          finalModel,
+          prompt,
+          images,
+          {
+            ratio,
+            resolution,
+            sampleStrength: finalSampleStrength,
+            negativePrompt,
+            intelligentRatio: finalIntelligentRatio,
+          },
+          token
+        );
+        return {
+          created: util.unixTimestamp(),
+          object: "image_generation_job",
+          id: job.id,
+          job_kind: job.job_kind,
+          expected_image_count: job.expected_image_count,
+          input_images: images.length,
+          composition_type: "multi_image_synthesis",
+        };
+      }
 
       const responseFormat = _.defaultTo(response_format, "url");
       const resultUrls = await generateImageComposition(finalModel, prompt, images, {
