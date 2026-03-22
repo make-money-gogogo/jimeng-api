@@ -71,3 +71,48 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \
 
 # 启动应用
 CMD ["npm", "start"]
+
+# -----------------------------------------------------------------------------
+# 生产阶段（含 Chromium，国内站 JIMENG_BROWSER_GENERATE=1 时绕过 shark）
+# 基于 Debian：playwright-core install-deps + install chromium（Alpine 不便安装）
+# 云服务器建议：内存 ≥2GB，docker compose 设置 shm_size: 2gb
+# 构建：docker build --target production-browser -t jimeng-api:browser .
+# -----------------------------------------------------------------------------
+FROM node:18-bookworm-slim AS production-browser
+
+RUN apt-get update && apt-get install -y --no-install-recommends wget ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/package-lock.json ./package-lock.json
+
+RUN npm ci --omit=dev --registry https://registry.npmmirror.com/ && npm cache clean --force
+
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN mkdir -p /ms-playwright \
+  && npx playwright-core install-deps chromium \
+  && npx playwright-core install chromium \
+  && rm -rf /root/.npm
+
+RUN groupadd --gid 1001 nodejs \
+  && useradd --uid 1001 --gid nodejs --shell /bin/bash --create-home jimeng \
+  && chown -R jimeng:nodejs /app /ms-playwright
+
+COPY --from=builder --chown=jimeng:nodejs /app/dist ./dist
+COPY --from=builder --chown=jimeng:nodejs /app/configs ./configs
+
+RUN mkdir -p /app/logs /app/tmp && chown -R jimeng:nodejs /app/logs /app/tmp
+
+ENV SERVER_PORT=5100
+ENV JIMENG_BROWSER_GENERATE=1
+ENV JIMENG_BROWSER_SINGLE_PROCESS=1
+
+USER jimeng
+EXPOSE 5100
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=3 \
+  CMD wget -q --spider http://localhost:5100/ping
+
+CMD ["npm", "start"]

@@ -1,28 +1,40 @@
+# 默认：本地构建「含 Chromium」镜像（国内 shark 绕过需要）
+# 纯 Alpine、无浏览器（更小）：build.target 改为 production
+#
+# 云服务器部署示例：
+#   1. 安装 Docker / Docker Compose plugin
+#   2. git clone … && cd jimeng-api-gogogo
+#   3. 可选：创建 .env（勿提交仓库），例如 JIMENG_BROWSER_GENERATE=1
+#   4. docker compose build && docker compose up -d
+#   5. 防火墙放行 5100（或改 ports 映射）
+#
 services:
   jimeng-api:
-    # 使用 GHCR 上的镜像（生产环境）
-    image: ghcr.io/iptag/jimeng-api:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production-browser
+    image: jimeng-api:browser
     container_name: jimeng-api
-    # 本地开发时可以取消注释下面的 build 配置
-    # image: jimeng-api:latest
-    # build:
-    #   context: .
-    #   dockerfile: Dockerfile
     restart: unless-stopped
     ports:
       - "5100:5100"
-    #volumes:
-    #  # 挂载日志目录（确保权限正确）
-    #  - ./logs:/app/logs
-    #  # 挂载临时目录
-    #  - ./tmp:/app/tmp
+    # Chromium 需要足够共享内存，避免崩溃 / browser has been closed
+    shm_size: "2gb"
+    # 有 .env 时：docker compose --env-file .env up -d
+    environment:
+      SERVER_PORT: "5100"
+      JIMENG_BROWSER_GENERATE: "1"
+      JIMENG_BROWSER_SINGLE_PROCESS: "1"
+    # volumes:
+    #   - ./logs:/app/logs
+    #   - ./tmp:/app/tmp
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:5100/ping"]
       interval: 15s
       timeout: 5s
       retries: 3
-      start_period: 20s
-    # 日志配置
+      start_period: 60s
     logging:
       driver: "json-file"
       options:
