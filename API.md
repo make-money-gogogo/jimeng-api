@@ -16,7 +16,27 @@
 
 ### 1.2 鉴权
 
-多数接口需要请求头：
+#### 服务级 API Key（可选）
+
+若部署时设置了 `SERVER_API_KEY` 环境变量，所有 API 请求必须携带：
+
+```http
+X-API-Key: your_secret_key
+```
+
+或通过查询参数传递：
+
+```
+?api_key=your_secret_key
+```
+
+> `Authorization` 请求头用于传递业务 token，**不**用于服务级鉴权，两者互不冲突。
+
+免鉴权路径（无需 Key 即可访问）：`/`、`/ping`、`/v1/docs`。
+
+#### 业务 Token
+
+多数生成类接口需要：
 
 ```http
 Authorization: Bearer <refresh_token>
@@ -180,6 +200,45 @@ curl -X POST http://localhost:5100/v1/images/compositions \
 | `file_paths` / `filePaths` | string[] | 参考图/视频 URL |
 | `response_format` | string | `url` 或 `b64_json` |
 | `async` | boolean | 异步任务 |
+
+#### 全能参考（`omni_reference`）提示词与图片引用
+
+当你希望同时控制“首帧/尾帧/动作参考”等，可以把 `functionMode` 设为 `omni_reference`。
+
+提交素材（两种方式二选一，或混用）：
+- multipart：用 `image_file_1` 到 `image_file_9` 上传图片文件；用 `video_file_1` 到 `video_file_3` 上传视频文件
+- JSON：同名字段 `image_file_1..9`、`video_file_1..3` 传对应的素材 URL（以 `http` 开头）
+
+在 `prompt` 里引用素材：
+
+`prompt` 支持用 `@` 引用素材槽位，示例：
+
+- `@image_file_1`：引用图片槽位 1
+- `@image_file_2`：引用图片槽位 2
+- `@video_file_1`：引用视频槽位 1
+
+注意事项：
+- `@xxx` 里 `xxx` 必须与你实际提交过的素材字段名一致（例如你传了 `image_file_2`，提示词就写 `@image_file_2`）
+- 如果你引用了未提交的名字，服务端不会在“素材注册表”中找到对应项，`@未注册名字` 很可能会被当作普通文本而不是素材引用
+
+`omni_reference` 示例（multipart）：
+
+```bash
+curl -X POST http://localhost:5100/v1/videos/generations \
+  -H "Authorization: Bearer <refresh_token>" \
+  -F "functionMode=omni_reference" \
+  -F "prompt=@image_file_1作为首帧，@image_file_2作为尾帧，运动动作模仿@video_file_1" \
+  -F "ratio=16:9" \
+  -F "duration=5" \
+  -F "image_file_1=@/path/to/start.jpg" \
+  -F "image_file_2=@/path/to/end.jpg" \
+  -F "video_file_1=@/path/to/motion.mp4"
+```
+
+`omni_reference` 约束（服务端校验）：
+- 最多上传 9 张图片（`image_file_1..image_file_9`）
+- 最多上传 3 个视频（`video_file_1..video_file_3`）
+- 图片 + 视频总数不超过 12
 
 ```bash
 # 纯文生视频

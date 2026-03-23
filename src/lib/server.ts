@@ -24,6 +24,27 @@ class Server {
         // 范围请求支持
         this.app.use(koaRange);
         this.router = new KoaRouter({ prefix: config.service.urlPrefix });
+        // API Key 鉴权（设置 SERVER_API_KEY 环境变量后生效）
+        const serverApiKey = process.env.SERVER_API_KEY?.trim();
+        if (serverApiKey) {
+            logger.info('API Key 鉴权已启用（SERVER_API_KEY 已设置）');
+            const EXEMPT_PATHS = ['', '/', '/ping', '/v1/docs'];
+            this.app.use(async (ctx: any, next: Function) => {
+                const path = ctx.path?.replace(/\/$/, '') || '';
+                const isExempt = EXEMPT_PATHS.includes(path) || path.startsWith('/v1/docs?');
+                if (!isExempt) {
+                    const apiKey =
+                        ctx.headers['x-api-key'] ||
+                        ctx.query?.api_key;
+                    if (apiKey !== serverApiKey) {
+                        ctx.status = 401;
+                        ctx.body = { error: 'Unauthorized', message: '需要有效的 API Key（X-API-Key 请求头 或 ?api_key= 查询参数）' };
+                        return;
+                    }
+                }
+                await next();
+            });
+        }
         // 前置处理异常拦截
         this.app.use(async (ctx: any, next: Function) => {
             if(ctx.request.type === "application/xml" || ctx.request.type === "application/ssml+xml")
