@@ -16,7 +16,7 @@
     "dev": "tsup src/index.ts --format cjs,esm --sourcemap --dts --watch --external playwright-core --onSuccess \"node --enable-source-maps --no-node-snapshot dist/index.js\"",
     "start": "node --enable-source-maps --no-node-snapshot dist/index.js",
     "build": "tsup src/index.ts --format cjs,esm --sourcemap --dts --clean --external playwright-core",
-    "build:share": "tsup src/index.ts --format cjs,esm --dts --clean --external playwright-core --minify && node scripts/obfuscate-share.mjs",
+    "build:share": "tsup src/index.ts --format cjs,esm --dts --clean --external playwright-core --minify --sourcemap false",
     "pack:docker-share": "npm run build && bash scripts/pack-docker-share.sh",
     "sync:dist": "npm run build:share && node scripts/make-share-package-json.mjs && bash -c 'D=docker-share; rsync -a --delete dist/ $D/dist/ && rsync -a --delete configs/ $D/configs/ && cp -f API.md $D/ && echo dist synced to $D'",
     "test": "echo \"Error: no test specified\" && exit 1",

@@ -36,6 +36,19 @@ class JimengBrowserService {
   private browser: Browser | null = null;
   private readonly sessions = new Map<string, SessionEntry>();
 
+  private resolveSingleProcessMode(): boolean {
+    const raw = process.env.JIMENG_BROWSER_SINGLE_PROCESS?.trim().toLowerCase();
+    // "1/true" 曾用于开启 single-process，但在云环境 headless-shell 上崩溃概率很高；
+    // 仅保留 "force" 作为显式开关，避免误配导致 Chromium 反复断连。
+    if (!raw) return false;
+    if (raw === "force") return true;
+    if (raw === "1" || raw === "true" || raw === "yes" || raw === "on") {
+      logger.warn("[shark-browser] 检测到 JIMENG_BROWSER_SINGLE_PROCESS=1/true，已忽略（不稳定）。如确需启用请设为 force");
+      return false;
+    }
+    return false;
+  }
+
   /** Chromium 已崩溃/断开时，引用仍非空会导致 newContext 报 “browser has been closed” */
   private dropDeadBrowserAndSessions() {
     this.browser = null;
@@ -59,8 +72,8 @@ class JimengBrowserService {
         ? "[shark-browser] 正在启动 Chromium（无头模式，无窗口）…"
         : "[shark-browser] 正在启动 Chromium（有头模式，将弹出窗口）…"
     );
-    // 默认不用 --single-process：在 macOS 上极易整进程崩溃，随后出现 browser.newContext: ... has been closed
-    const dockerTight = process.env.JIMENG_BROWSER_SINGLE_PROCESS === "1";
+    // 默认不用 --single-process：在云环境 headless-shell 下也容易整进程崩溃并触发 disconnected
+    const dockerTight = this.resolveSingleProcessMode();
     const launchArgs = [
       "--no-sandbox",
       "--disable-setuid-sandbox",

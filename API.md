@@ -331,7 +331,7 @@ curl -X POST http://localhost:5100/token/receive \
 | `SERVER_ENV` | 配置子目录名，默认 `dev`，对应 `configs/<SERVER_ENV>/` |
 | `JIMENG_BROWSER_GENERATE` | `1`/`true`/`yes`/`on` 时，国内站部分生成请求走 Chromium 降低风控概率 |
 | `JIMENG_BROWSER_HEADLESS` | 是否无头；默认无头 |
-| `JIMENG_BROWSER_SINGLE_PROCESS` | Docker 等资源紧张时可设 `1` 降低 Chromium 多进程占用 |
+| `JIMENG_BROWSER_SINGLE_PROCESS` | 默认不要开启（云端易崩溃）；仅在明确测试通过时设为 `force` |
 | `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` | 自定义 Chromium 可执行文件路径 |
 | `PLAYWRIGHT_BROWSERS_PATH` | Playwright 浏览器缓存目录（镜像内常设 `/ms-playwright`） |
 | `JIMENG_CLIENT_OS` | 设为 `mac` 时使用 Mac 客户端相关请求头分支 |
