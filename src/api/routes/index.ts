@@ -5,6 +5,7 @@ import token from './token.js';
 import models from './models.ts';
 import documentation from "./documentation.ts";
 import videos from './videos.ts';
+import admin from './admin.ts';
 
 export default [
     {
@@ -25,7 +26,8 @@ export default [
                         videos: '/v1/videos/generations',
                         videos_async_status: '/v1/videos/generations/status',
                         models: '/v1/models',
-                        health: '/ping'
+                        health: '/ping',
+                        admin: '/admin'
                     }
                 };
             }
@@ -36,5 +38,6 @@ export default [
     token,
     models,
     documentation,
-    videos
+    videos,
+    admin
 ];

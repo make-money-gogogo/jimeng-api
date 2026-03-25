@@ -13,12 +13,21 @@ import {
 import { DEFAULT_IMAGE_MODEL } from "@/api/consts/common.ts";
 import { tokenSplit } from "@/api/controllers/core.ts";
 import util from "@/lib/util.ts";
+import { recordTaskStatusSnapshot, recordTaskSubmission } from '@/admin/task-tracker.ts';
 
 function isAsyncFlag(v: unknown): boolean {
   return v === true || v === "true";
 }
 
 const JOB_KINDS: ImageJobKind[] = ["text2img", "text2img_multi", "img2img"];
+
+function normalizeImageRefList(images: any[] | undefined): string[] {
+  if (!Array.isArray(images)) return [];
+  return images
+    .map((image) => (typeof image === 'string' ? image : image?.url))
+    .filter((value): value is string => typeof value === 'string' && value.length > 0)
+    .slice(0, 20);
+}
 
 export default {
   prefix: "/v1/images",
@@ -34,6 +43,13 @@ export default {
       const token = _.sample(tokens);
       const { id, job_kind: jobKind } = request.body;
       const result = await queryImageGenerationStatus(id, token, jobKind as ImageJobKind);
+      recordTaskStatusSnapshot({
+        taskId: id,
+        taskType: 'image',
+        token,
+        jobKind: jobKind as ImageJobKind,
+        statusPayload: result,
+      });
       return {
         created: util.unixTimestamp(),
         ...result,
@@ -77,6 +93,16 @@ export default {
       const finalModel = _.defaultTo(model, DEFAULT_IMAGE_MODEL);
 
       if (isAsyncFlag(asyncFlag)) {
+        const requestMeta = {
+          model: finalModel,
+          prompt,
+          negative_prompt: negativePrompt,
+          ratio,
+          resolution,
+          intelligent_ratio: intelligentRatio,
+          sample_strength: sampleStrength,
+          mode: 'text2img',
+        };
         const job = await submitImageGenerationAsync(
           finalModel,
           prompt,
@@ -89,6 +115,13 @@ export default {
           },
           token
         );
+        recordTaskSubmission({
+          taskId: job.id,
+          taskType: 'image',
+          token,
+          jobKind: job.job_kind,
+          requestMeta,
+        });
         return {
           created: util.unixTimestamp(),
           object: "image_generation_job",
@@ -220,6 +253,23 @@ export default {
       const token = _.sample(tokens);
 
       if (isAsyncFlag(asyncFlag)) {
+        const imageRefs = isMultiPart
+          ? (Array.isArray(request.files?.images) ? request.files.images : request.files?.images ? [request.files.images] : [])
+              .map((file: any) => file?.originalFilename)
+              .filter((name: any) => typeof name === 'string' && name.length > 0)
+          : normalizeImageRefList(request.body.images);
+        const requestMeta = {
+          model: finalModel,
+          prompt,
+          negative_prompt: negativePrompt,
+          ratio,
+          resolution,
+          intelligent_ratio: finalIntelligentRatio,
+          sample_strength: finalSampleStrength,
+          mode: 'img2img',
+          input_image_count: images.length,
+          input_image_refs: imageRefs.slice(0, 20),
+        };
         const job = await submitImageCompositionAsync(
           finalModel,
           prompt,
@@ -233,6 +283,13 @@ export default {
           },
           token
         );
+        recordTaskSubmission({
+          taskId: job.id,
+          taskType: 'image',
+          token,
+          jobKind: job.job_kind,
+          requestMeta,
+        });
         return {
           created: util.unixTimestamp(),
           object: "image_generation_job",

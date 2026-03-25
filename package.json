@@ -42,7 +42,9 @@
   },
   "homepage": "https://github.com/your-repo/jimeng-api#readme",
   "dependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "axios": "^1.6.7",
+    "better-sqlite3": "^11.10.0",
     "colors": "^1.4.0",
     "crc-32": "^1.2.2",
     "cron": "^3.1.6",

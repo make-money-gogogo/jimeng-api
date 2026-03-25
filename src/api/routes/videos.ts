@@ -9,6 +9,7 @@ import {
     DEFAULT_MODEL,
 } from '@/api/controllers/videos.ts';
 import util from '@/lib/util.ts';
+import { recordTaskStatusSnapshot, recordTaskSubmission } from '@/admin/task-tracker.ts';
 
 function isAsyncFlag(v: unknown): boolean {
     return v === true || v === 'true';
@@ -19,6 +20,41 @@ function isSeedanceModelName(modelName: string): boolean {
         || modelName.includes('40_pro')
         || modelName.includes('40-pro')
         || modelName.includes('seedance-2.0-fast');
+}
+
+function resolveVideoJobKind(functionMode: string, filePathCount: number, fileCount: number): string {
+    if (functionMode === 'omni_reference') return 'omni_reference';
+    const totalFiles = Math.max(filePathCount, fileCount);
+    if (totalFiles >= 2) return 'img2video_first_last';
+    if (totalFiles === 1) return 'img2video_single';
+    return 'text2video';
+}
+
+function collectUploadedFileNames(files: any): string[] {
+    if (!files || typeof files !== 'object') return [];
+    const names: string[] = [];
+    for (const value of Object.values(files)) {
+        const items = Array.isArray(value) ? value : [value];
+        for (const file of items) {
+            const name = file?.originalFilename;
+            if (typeof name === 'string' && name.length > 0) names.push(name);
+        }
+    }
+    return names.slice(0, 30);
+}
+
+function collectOmniUrlRefs(body: any): string[] {
+    if (!body || typeof body !== 'object') return [];
+    const refs: string[] = [];
+    for (let i = 1; i <= 9; i++) {
+        const value = body[`image_file_${i}`];
+        if (typeof value === 'string' && value.startsWith('http')) refs.push(value);
+    }
+    for (let i = 1; i <= 3; i++) {
+        const value = body[`video_file_${i}`];
+        if (typeof value === 'string' && value.startsWith('http')) refs.push(value);
+    }
+    return refs.slice(0, 30);
 }
 
 export default {
@@ -36,6 +72,12 @@ export default {
             const token = _.sample(tokens);
             const { id } = request.body;
             const result = await queryVideoGenerationStatus(id, token);
+            recordTaskStatusSnapshot({
+                taskId: id,
+                taskType: 'video',
+                token,
+                statusPayload: result,
+            });
             return {
                 created: util.unixTimestamp(),
                 ...result,
@@ -195,6 +237,20 @@ export default {
 
             // 兼容两种参数名格式：file_paths 和 filePaths
             const finalFilePaths = filePaths.length > 0 ? filePaths : file_paths;
+            const uploadedFileCount = request.files ? _.values(request.files).length : 0;
+            const videoJobKind = resolveVideoJobKind(functionMode, finalFilePaths.length, uploadedFileCount);
+            const requestMeta = {
+                model,
+                prompt,
+                ratio,
+                resolution,
+                duration: finalDuration,
+                functionMode,
+                mode: videoJobKind,
+                file_paths: finalFilePaths.slice(0, 20),
+                uploaded_files: collectUploadedFileNames(request.files),
+                omni_url_refs: collectOmniUrlRefs(request.body),
+            };
 
             if (useAsyncSubmit) {
                 const job = await submitVideoGenerationAsync(
@@ -211,6 +267,13 @@ export default {
                     },
                     token
                 );
+                recordTaskSubmission({
+                    taskId: job.id,
+                    taskType: 'video',
+                    token,
+                    jobKind: videoJobKind,
+                    requestMeta,
+                });
                 return {
                     created: util.unixTimestamp(),
                     object: 'video_generation_job',

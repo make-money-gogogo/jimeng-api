@@ -102,8 +102,7 @@ RUN npm ci --omit=dev --registry https://registry.npmmirror.com/ && npm cache cl
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
 RUN addgroup -g 1001 -S nodejs \
-  && adduser -S jimeng -u 1001 \
-  && chown -R jimeng:nodejs /app
+  && adduser -S jimeng -u 1001
 
 COPY --from=builder --chown=jimeng:nodejs /app/dist ./dist
 COPY --from=builder --chown=jimeng:nodejs /app/configs ./configs
