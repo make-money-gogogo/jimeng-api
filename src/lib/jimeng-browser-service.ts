@@ -7,7 +7,6 @@ import util from "@/lib/util.ts";
 const SESSION_IDLE_MS = 10 * 60 * 1000;
 const BDMS_READY_MS = 30000;
 const BLOCKED_RESOURCE_TYPES = new Set(["image", "font", "stylesheet", "media"]);
-const SCRIPT_WHITELIST = ["vlabstatic.com", "bytescm.com", "jianying.com", "byteimg.com"];
 
 type SessionEntry = {
   context: BrowserContext;
@@ -21,8 +20,6 @@ function buildJimengCookies(sessionId: string, webId: string, userId: string) {
   return [
     { name: "_tea_web_id", value: webId, domain: ".jianying.com", path: "/" },
     { name: "is_staff_user", value: "false", domain: ".jianying.com", path: "/" },
-    { name: "store-region", value: "cn-gd", domain: ".jianying.com", path: "/" },
-    { name: "store-region-src", value: "uid", domain: ".jianying.com", path: "/" },
     { name: "uid_tt", value: userId, domain: ".jianying.com", path: "/" },
     { name: "uid_tt_ss", value: userId, domain: ".jianying.com", path: "/" },
     { name: "sid_tt", value: sessionId, domain: ".jianying.com", path: "/" },
@@ -117,20 +114,16 @@ class JimengBrowserService {
 
   private async createFreshContext(sessionId: string, webId: string, userId: string) {
     const browser = await this.ensureBrowser();
-    // 与 seedance2.0 browser-service 固定一致，避免与即梦风控期望的 Web 指纹不一致（易触发 4013）
-    const userAgent =
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36";
-
     let context: BrowserContext;
     try {
-      context = await browser.newContext({ userAgent });
+      context = await browser.newContext();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("closed") || msg.includes("Target page")) {
         logger.warn("[shark-browser] newContext 失败（浏览器已死），正在重建 Chromium");
         this.dropDeadBrowserAndSessions();
         const b2 = await this.ensureBrowser();
-        context = await b2.newContext({ userAgent });
+        context = await b2.newContext();
       } else {
         throw err;
       }
@@ -166,12 +159,7 @@ class JimengBrowserService {
     await context.route("**/*", route => {
       const req = route.request();
       const type = req.resourceType();
-      const url = req.url();
       if (BLOCKED_RESOURCE_TYPES.has(type)) return route.abort();
-      if (type === "script") {
-        const ok = SCRIPT_WHITELIST.some(d => url.includes(d));
-        if (!ok) return route.abort();
-      }
       return route.continue();
     });
 
@@ -216,10 +204,11 @@ class JimengBrowserService {
     webId: string;
     userId: string;
     url: string;
+    refererUrl?: string;
     headers: Record<string, string>;
     body?: string;
   }): Promise<unknown> {
-    const { sessionKey, sessionId, webId, userId, url, headers, body } = opts;
+    const { sessionKey, sessionId, webId, userId, url, refererUrl, headers, body } = opts;
     const evalArg = { url, headers, body: body ?? null };
 
     const runEvaluate = (pg: Page) =>
@@ -244,6 +233,16 @@ class JimengBrowserService {
       );
 
     let { page } = await this.getOrCreateSession(sessionKey, sessionId, webId, userId);
+    // 在与 axios 一致的页面上下文中发起 fetch，避免首页 referer 触发权限分支（ret=3018）。
+    if (refererUrl) {
+      const current = page.url();
+      if (!current.startsWith(refererUrl)) {
+        await page.goto(refererUrl, {
+          waitUntil: "domcontentloaded",
+          timeout: 30000,
+        });
+      }
+    }
     logger.info(`[shark-browser] fetch POST ${url.substring(0, 96)}…`);
 
     let result: unknown;

@@ -59,6 +59,7 @@ RUN mkdir -p /app/logs /app/tmp && \
 
 # 设置环境变量
 ENV SERVER_PORT=5100
+ENV TMPDIR=/app/tmp
 
 # 切换到非root用户
 USER jimeng
@@ -79,10 +80,17 @@ CMD ["npm", "start"]
 # 云服务器建议：内存 ≥2GB，docker compose 设置 shm_size: 2gb
 # 构建：docker build --target production-browser -t jimeng-api:browser .
 # -----------------------------------------------------------------------------
-FROM node:18-bookworm-slim AS production-browser
+FROM node:18-alpine AS production-browser
 
-RUN apt-get update && apt-get install -y --no-install-recommends wget ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache \
+  wget \
+  ca-certificates \
+  chromium \
+  nss \
+  freetype \
+  harfbuzz \
+  ttf-freefont \
+  font-noto-cjk
 
 WORKDIR /app
 
@@ -91,15 +99,11 @@ COPY --from=builder /app/package-lock.json ./package-lock.json
 
 RUN npm ci --omit=dev --registry https://registry.npmmirror.com/ && npm cache clean --force
 
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-RUN mkdir -p /ms-playwright \
-  && npx playwright-core install-deps chromium \
-  && npx playwright-core install chromium \
-  && rm -rf /root/.npm
+ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
-RUN groupadd --gid 1001 nodejs \
-  && useradd --uid 1001 --gid nodejs --shell /bin/bash --create-home jimeng \
-  && chown -R jimeng:nodejs /app /ms-playwright
+RUN addgroup -g 1001 -S nodejs \
+  && adduser -S jimeng -u 1001 \
+  && chown -R jimeng:nodejs /app
 
 COPY --from=builder --chown=jimeng:nodejs /app/dist ./dist
 COPY --from=builder --chown=jimeng:nodejs /app/configs ./configs
@@ -110,6 +114,7 @@ RUN mkdir -p /app/logs /app/tmp && chown -R jimeng:nodejs /app/logs /app/tmp
 ENV SERVER_PORT=5100
 ENV JIMENG_BROWSER_GENERATE=1
 ENV JIMENG_BROWSER_SINGLE_PROCESS=1
+ENV TMPDIR=/app/tmp
 
 USER jimeng
 EXPOSE 5100
