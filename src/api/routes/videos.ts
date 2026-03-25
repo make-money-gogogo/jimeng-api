@@ -14,6 +14,13 @@ function isAsyncFlag(v: unknown): boolean {
     return v === true || v === 'true';
 }
 
+function isSeedanceModelName(modelName: string): boolean {
+    return modelName.includes('seedance-2.0')
+        || modelName.includes('40_pro')
+        || modelName.includes('40-pro')
+        || modelName.includes('seedance-2.0-fast');
+}
+
 export default {
 
     prefix: '/v1/videos',
@@ -177,6 +184,10 @@ export default {
                 async: asyncFlag,
             } = request.body;
 
+            // Seedance 2.0 / 2.0-fast 任务排队时间可能非常长；
+            // 当调用方未显式传 async 时，默认走异步提交（仅返回任务ID）。
+            const useAsyncSubmit = isAsyncFlag(asyncFlag) || (_.isUndefined(asyncFlag) && isSeedanceModelName(model));
+
             // 如果是 multipart/form-data，需要将字符串转换为数字
             const finalDuration = isMultiPart && typeof duration === 'string'
                 ? parseInt(duration)
@@ -185,7 +196,7 @@ export default {
             // 兼容两种参数名格式：file_paths 和 filePaths
             const finalFilePaths = filePaths.length > 0 ? filePaths : file_paths;
 
-            if (isAsyncFlag(asyncFlag)) {
+            if (useAsyncSubmit) {
                 const job = await submitVideoGenerationAsync(
                     model,
                     prompt,
