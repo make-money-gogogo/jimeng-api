@@ -25,10 +25,17 @@ services:
     environment:
       SERVER_PORT: "5100"
       JIMENG_BROWSER_GENERATE: "1"
-      # JIMENG_BROWSER_SINGLE_PROCESS: ""  # 默认不启用（云端易崩溃）；仅设 force 才启用
+      JIMENG_BROWSER_SINGLE_PROCESS: "1"
+      ADMIN_USERNAME: "${ADMIN_USERNAME:-}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
+      ADMIN_SESSION_SECRET: "${ADMIN_SESSION_SECRET:-}"
+      ADMIN_SESSION_TTL_HOURS: "${ADMIN_SESSION_TTL_HOURS:-12}"
+      ADMIN_DB_PATH: "${ADMIN_DB_PATH:-/app/tmp/admin.sqlite}"
+      ADMIN_TASK_RETENTION_DAYS: "${ADMIN_TASK_RETENTION_DAYS:-30}"
     # volumes:
     #   - ./logs:/app/logs
-    #   - ./tmp:/app/tmp
+    volumes:
+      - ./tmp:/app/tmp
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:5100/ping"]
       interval: 15s

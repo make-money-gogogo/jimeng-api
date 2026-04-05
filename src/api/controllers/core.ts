@@ -394,21 +394,39 @@ export async function request(
             "[shark-browser] 使用 Playwright 提交生成（默认无头不弹窗；调试设 JIMENG_BROWSER_HEADLESS=0）"
           );
           const { jimengBrowserService } = await import("@/lib/jimeng-browser-service.ts");
-          // 与 seedance2.0 一致：query 不含 msToken/a_bogus（由页面脚本注入）；且不含 os（seedance generate URL 无此项）
+          // 与 seedance2.0 一致：query 不含 msToken/a_bogus（由页面脚本注入）
+          // 注意：图像生成链路对 os 参数敏感，保留 os 以与 axios 请求保持一致，避免权限判定差异（ret=3018）
           const urlParams = { ...requestParams } as Record<string, unknown>;
           delete urlParams.msToken;
           delete urlParams.a_bogus;
-          delete urlParams.os;
           const browserUrl = new URL(fullUrl);
           for (const [k, v] of Object.entries(urlParams)) {
             if (v === undefined || v === null) continue;
             browserUrl.searchParams.set(k, String(v));
           }
-          // 与 seedance2.0 一致：页面内 fetch 只带 Content-Type，不携带 Node 侧 Sign/Device-Time/User-Agent 等，
-          // 否则易与 bdms 改写后的请求不一致，触发风控 ret=4013「异常行为」
-          const fetchHeaders: Record<string, string> = {
-            "Content-Type": "application/json",
-          };
+          // 浏览器端仅透传业务校验相关头（避免设置浏览器禁止头），提升与 axios 链路一致性。
+          const fetchHeaderKeys = [
+            "Content-Type",
+            "App-Sdk-Version",
+            "Appid",
+            "Device-Time",
+            "Lan",
+            "Loc",
+            "Sign",
+            "Sign-Ver",
+            "Tdid",
+            "Appvr",
+            "Pf",
+            "Pragma",
+            "Cache-control",
+          ] as const;
+          const fetchHeaders: Record<string, string> = {};
+          for (const k of fetchHeaderKeys) {
+            const v = headers[k];
+            if (v === undefined || v === null) continue;
+            fetchHeaders[k] = String(v);
+          }
+          if (!fetchHeaders["Content-Type"]) fetchHeaders["Content-Type"] = "application/json";
           const sessionIdForBrowser = (isUS || isHK || isJP || isSG)
             ? tokenWithRegion.substring(3)
             : tokenWithRegion;
@@ -418,6 +436,7 @@ export async function request(
             webId: String(WEB_ID),
             userId: USER_ID,
             url: browserUrl.toString(),
+            refererUrl: typeof options.headers?.Referer === "string" ? options.headers.Referer : undefined,
             headers: fetchHeaders,
             body: options.data !== undefined ? JSON.stringify(options.data) : undefined,
           });

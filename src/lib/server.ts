@@ -32,7 +32,8 @@ class Server {
             this.app.use(async (ctx: any, next: Function) => {
                 const path = ctx.path?.replace(/\/$/, '') || '';
                 const isExempt = EXEMPT_PATHS.includes(path) || path.startsWith('/v1/docs?');
-                if (!isExempt) {
+                const isAdminRoute = path === '/admin' || path.startsWith('/admin-api');
+                if (!isExempt && !isAdminRoute) {
                     const apiKey =
                         ctx.headers['x-api-key'] ||
                         ctx.query?.api_key;
@@ -90,7 +91,10 @@ class Server {
 
                 // 安全的JSON解析
                 let parsedBody;
-                try {
+                if (!cleanedBody) {
+                    // 允许空JSON请求体（例如仅依赖URL参数或Cookie的POST接口）
+                    parsedBody = {};
+                } else try {
                     parsedBody = JSON.parse(cleanedBody);
                 } catch (parseError) {
                     logger.error(`JSON解析失败: ${parseError.message}`);
