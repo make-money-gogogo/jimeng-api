@@ -11,9 +11,8 @@ import logger from "@/lib/logger.ts";
 import { SmartPoller, PollingStatus } from "@/lib/smart-poller.ts";
 import { DEFAULT_ASSISTANT_ID_CN, DEFAULT_ASSISTANT_ID_US, DEFAULT_ASSISTANT_ID_HK, DEFAULT_ASSISTANT_ID_JP, DEFAULT_ASSISTANT_ID_SG, DEFAULT_VIDEO_MODEL, DRAFT_VERSION, DRAFT_VERSION_OMNI, DRAFT_VERSION_VIP, OMNI_BENEFIT_TYPE, OMNI_BENEFIT_TYPE_FAST, VIP_BENEFIT_TYPE_PRO, VIP_BENEFIT_TYPE_FAST, VIDEO_MODEL_MAP, VIDEO_MODEL_MAP_US, VIDEO_MODEL_MAP_ASIA, STATUS_CODE_MAP } from "@/api/consts/common.ts";
 import { uploadImageBuffer, ImageUploadResult } from "@/lib/image-uploader.ts";
-import { uploadVideoBuffer, VideoUploadResult } from "@/lib/video-uploader.ts";
+import { uploadVideoBuffer, VideoUploadResult, uploadVideoFromUrl, uploadAudioBuffer, AudioUploadResult, uploadAudioFromUrl } from "@/lib/video-uploader.ts";
 import { extractVideoUrl, fetchHighQualityVideoUrl } from "@/lib/image-utils.ts";
-import { uploadVideoFromUrl } from "@/lib/video-uploader.ts";
 
 export const DEFAULT_MODEL = DEFAULT_VIDEO_MODEL;
 
@@ -395,7 +394,8 @@ async function submitVideoDraftAndGetHistoryId(
       imageHeight?: number;
       imageFormat?: string;
       videoResult?: VideoUploadResult;
-      audioUri?: string;
+      audioVid?: string;
+      audioDuration?: number;
     }
     const materialRegistry: Map<string, MaterialEntry> = new Map();
     let materialIdx = 0;
@@ -608,38 +608,40 @@ async function submitVideoDraftAndGetHistoryId(
 
     logger.info(`[omni] 视频总时长: ${totalVideoDuration.toFixed(2)}s`);
 
-    // 串行上传音频素材
+    // 串行上传音频素材（走 VOD 管道，返回 vid + duration）
     for (const fieldName of audioFields) {
       const audioFile = files?.[fieldName];
       const audioUrlField = httpRequest?.body?.[fieldName];
 
       try {
-        logger.info(`[omni] 上传 ${fieldName}`);
+        logger.info(`[omni] 上传 ${fieldName} (VOD)`);
 
         if (audioFile) {
           const buf = await fs.readFile(audioFile.filepath);
-          const audioResult = await uploadImageBuffer(buf, refreshToken, regionInfo);
+          const audioResult: AudioUploadResult = await uploadAudioBuffer(buf, refreshToken, regionInfo, audioFile.originalFilename);
           const entry: MaterialEntry = {
             idx: materialIdx++,
             type: "audio",
             fieldName,
             originalFilename: audioFile.originalFilename,
-            audioUri: audioResult.uri,
+            audioVid: audioResult.vid,
+            audioDuration: audioResult.duration,
           };
           materialRegistry.set(fieldName, entry);
           registerAlias(audioFile.originalFilename, entry);
-          logger.info(`[omni] ${fieldName} 上传成功: ${audioResult.uri}`);
+          logger.info(`[omni] ${fieldName} VOD上传成功: vid=${audioResult.vid}, duration=${audioResult.duration}ms`);
         } else if (audioUrlField && typeof audioUrlField === 'string' && audioUrlField.startsWith('http')) {
-          const audioResult = await uploadImageFromUrl(audioUrlField, refreshToken, regionInfo);
+          const audioResult: AudioUploadResult = await uploadAudioFromUrl(audioUrlField, refreshToken, regionInfo);
           const entry: MaterialEntry = {
             idx: materialIdx++,
             type: "audio",
             fieldName,
             originalFilename: audioUrlField,
-            audioUri: audioResult.uri,
+            audioVid: audioResult.vid,
+            audioDuration: audioResult.duration,
           };
           materialRegistry.set(fieldName, entry);
-          logger.info(`[omni] ${fieldName} URL上传成功: ${audioResult.uri}`);
+          logger.info(`[omni] ${fieldName} VOD URL上传成功: vid=${audioResult.vid}, duration=${audioResult.duration}ms`);
         }
       } catch (error: any) {
         throw new APIException(EX.API_REQUEST_FAILED, `${fieldName} 处理失败: ${error.message}`);
@@ -701,8 +703,9 @@ async function submitVideoDraftAndGetHistoryId(
             type: "audio",
             id: util.uuid(),
             source_from: "upload",
-            name: "",
-            uri: entry.audioUri,
+            vid: entry.audioVid,
+            duration: entry.audioDuration || 0,
+            name: entry.originalFilename || "",
           },
         });
         materialTypes.push(3);
@@ -744,10 +747,19 @@ async function submitVideoDraftAndGetHistoryId(
       sceneOptions: JSON.stringify([sceneOption]),
     });
 
-    // VIP 用专属 benefit_type，否则走 omni 模式常量
-    const omniBenefitType = isVip
-      ? getVideoBenefitType(model, true)
-      : (is40 ? OMNI_BENEFIT_TYPE_FAST : OMNI_BENEFIT_TYPE);
+    // benefit_type 逻辑：
+    // - 非VIP：使用 omni 专用常量（已包含正确的 benefit 名）
+    // - VIP：使用 VIP 专属 benefit_type；当存在视频素材时追加 _with_video 后缀
+    const hasVideoMaterial = materialTypes.includes(2);
+    let omniBenefitType: string;
+    if (isVip) {
+      omniBenefitType = getVideoBenefitType(model, true);
+      if (hasVideoMaterial) {
+        omniBenefitType = omniBenefitType + "_with_video";
+      }
+    } else {
+      omniBenefitType = is40 ? OMNI_BENEFIT_TYPE_FAST : OMNI_BENEFIT_TYPE;
+    }
 
     requestData = {
       params: {

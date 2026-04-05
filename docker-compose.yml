@@ -25,7 +25,7 @@ services:
     environment:
       SERVER_PORT: "5100"
       JIMENG_BROWSER_GENERATE: "1"
-      JIMENG_BROWSER_SINGLE_PROCESS: "1"
+      # JIMENG_BROWSER_SINGLE_PROCESS: ""  # 默认不启用（云端易崩溃）；仅设 force 才启用
     # volumes:
     #   - ./logs:/app/logs
     #   - ./tmp:/app/tmp

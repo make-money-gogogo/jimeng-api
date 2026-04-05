@@ -324,3 +324,296 @@ export async function uploadVideoFromUrl(
     throw error;
   }
 }
+
+// ======================== 音频上传（VOD） ========================
+
+export interface AudioUploadResult {
+  vid: string;
+  duration: number; // 毫秒
+  name: string;
+}
+
+/**
+ * 解析音频文件时长（毫秒）
+ * WAV 格式精确解析，其他格式按 128kbps 估算
+ */
+function parseAudioDuration(buffer: Buffer): number {
+  try {
+    if (
+      buffer.length >= 44 &&
+      buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 &&
+      buffer[8] === 0x57 && buffer[9] === 0x41 && buffer[10] === 0x56 && buffer[11] === 0x45
+    ) {
+      const byteRate = buffer.readUInt32LE(28);
+      if (byteRate > 0) {
+        let offset = 12;
+        while (offset < buffer.length - 8) {
+          const chunkId = buffer.toString('ascii', offset, offset + 4);
+          const chunkSize = buffer.readUInt32LE(offset + 4);
+          if (chunkId === 'data') {
+            return Math.round(chunkSize / byteRate * 1000);
+          }
+          offset += 8 + chunkSize;
+        }
+        return Math.round((buffer.length - 44) / byteRate * 1000);
+      }
+    }
+    return Math.round(buffer.length / (128 * 1000 / 8) * 1000);
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * 通过 VOD 上传音频 Buffer（与视频走同一管道：scene=1, FileType=video）
+ * 返回 vid + duration(ms)
+ */
+export async function uploadAudioBuffer(
+  audioBuffer: ArrayBuffer | Buffer,
+  refreshToken: string,
+  regionInfo: RegionInfo,
+  filename?: string,
+): Promise<AudioUploadResult> {
+  try {
+    const buf = Buffer.isBuffer(audioBuffer) ? audioBuffer : Buffer.from(audioBuffer);
+    const fileSize = buf.byteLength;
+    logger.info(`开始上传音频Buffer... (size=${fileSize})`);
+
+    // 1) 获取 VOD 上传令牌 (scene=1)
+    const tokenResult = await request("post", "/mweb/v1/get_upload_token", refreshToken, {
+      data: { scene: 1 },
+    });
+    const { access_key_id, secret_access_key, session_token, space_name } = tokenResult;
+    if (!access_key_id || !secret_access_key || !session_token) {
+      throw new Error("获取音频上传令牌失败");
+    }
+    const spaceName = space_name || "dreamina";
+    logger.info(`获取音频上传令牌成功: spaceName=${spaceName}`);
+
+    // 2) ApplyUploadInner
+    const now = new Date();
+    const timestamp = now.toISOString().replace(/[:\-]/g, '').replace(/\.\d{3}Z$/, 'Z');
+    const randomStr = Math.random().toString(36).substring(2, 12);
+
+    const vodHost = "https://vod.bytedanceapi.com";
+    const applyUrl = `${vodHost}/?Action=ApplyUploadInner&Version=2020-11-19&SpaceName=${spaceName}&FileType=video&IsInner=1&FileSize=${fileSize}&s=${randomStr}`;
+
+    const awsRegion = RegionUtils.getAWSRegion(regionInfo);
+    const origin = RegionUtils.getOrigin(regionInfo);
+
+    const requestHeaders = {
+      'x-amz-date': timestamp,
+      'x-amz-security-token': session_token,
+    };
+
+    const authorization = createSignature(
+      'GET', applyUrl, requestHeaders,
+      access_key_id, secret_access_key, session_token,
+      '', awsRegion, 'vod'
+    );
+
+    logger.info(`申请音频上传权限: ${applyUrl}`);
+
+    let applyResponse;
+    try {
+      applyResponse = await axios({
+        method: 'GET',
+        url: applyUrl,
+        headers: {
+          'accept': '*/*',
+          'accept-language': 'zh-CN,zh;q=0.9',
+          'authorization': authorization,
+          'origin': origin,
+          'referer': RegionUtils.getRefererPath(regionInfo),
+          'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36',
+          'x-amz-date': timestamp,
+          'x-amz-security-token': session_token,
+        },
+        validateStatus: () => true,
+      });
+    } catch (fetchError: any) {
+      throw new Error(`音频上传申请网络请求失败 (${vodHost}): ${fetchError.message}`);
+    }
+
+    if (applyResponse.status < 200 || applyResponse.status >= 300) {
+      const errorText = typeof applyResponse.data === 'string' ? applyResponse.data : JSON.stringify(applyResponse.data);
+      throw new Error(`申请音频上传权限失败: ${applyResponse.status} - ${errorText}`);
+    }
+
+    const applyResult = applyResponse.data;
+    if (applyResult?.ResponseMetadata?.Error) {
+      throw new Error(`申请音频上传权限失败: ${JSON.stringify(applyResult.ResponseMetadata.Error)}`);
+    }
+
+    const uploadNodes = applyResult?.Result?.InnerUploadAddress?.UploadNodes;
+    if (!uploadNodes || uploadNodes.length === 0) {
+      throw new Error(`获取音频上传节点失败: ${JSON.stringify(applyResult)}`);
+    }
+
+    const uploadNode = uploadNodes[0];
+    const storeInfo = uploadNode.StoreInfos?.[0];
+    if (!storeInfo) {
+      throw new Error(`获取音频上传存储信息失败: ${JSON.stringify(uploadNode)}`);
+    }
+
+    const uploadHost = uploadNode.UploadHost;
+    const storeUri = storeInfo.StoreUri;
+    const auth = storeInfo.Auth;
+    const sessionKey = uploadNode.SessionKey;
+    const vid = uploadNode.Vid;
+
+    logger.info(`获取音频上传节点成功: host=${uploadHost}, vid=${vid}`);
+
+    // 3) 上传二进制
+    const uploadUrl = `https://${uploadHost}/upload/v1/${storeUri}`;
+    const crc32 = util.calculateCRC32(buf);
+    logger.info(`开始上传音频文件: ${uploadUrl}, CRC32=${crc32}`);
+
+    let uploadResponse;
+    try {
+      uploadResponse = await axios({
+        method: 'POST',
+        url: uploadUrl,
+        headers: {
+          'Accept': '*/*',
+          'Authorization': auth,
+          'Content-CRC32': crc32,
+          'Content-Type': 'application/octet-stream',
+          'Origin': origin,
+          'Referer': RegionUtils.getRefererPath(regionInfo),
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36',
+        },
+        data: buf,
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
+        validateStatus: () => true,
+      });
+    } catch (fetchError: any) {
+      throw new Error(`音频文件上传网络请求失败 (${uploadHost}): ${fetchError.message}`);
+    }
+
+    if (uploadResponse.status < 200 || uploadResponse.status >= 300) {
+      const errorText = typeof uploadResponse.data === 'string' ? uploadResponse.data : JSON.stringify(uploadResponse.data);
+      throw new Error(`音频文件上传失败: ${uploadResponse.status} - ${errorText}`);
+    }
+
+    const uploadData = uploadResponse.data;
+    if (uploadData?.code !== 2000) {
+      throw new Error(`音频文件上传失败: code=${uploadData?.code}, message=${uploadData?.message}`);
+    }
+    logger.info(`音频文件上传成功: crc32=${uploadData.data?.crc32}`);
+
+    // 4) CommitUploadInner
+    const commitUrl = `${vodHost}/?Action=CommitUploadInner&Version=2020-11-19&SpaceName=${spaceName}`;
+    const commitTimestamp = new Date().toISOString().replace(/[:\-]/g, '').replace(/\.\d{3}Z$/, 'Z');
+    const commitPayload = JSON.stringify({ SessionKey: sessionKey, Functions: [] });
+
+    const payloadHash = crypto.createHash('sha256').update(commitPayload, 'utf8').digest('hex');
+
+    const commitRequestHeaders = {
+      'x-amz-date': commitTimestamp,
+      'x-amz-security-token': session_token,
+      'x-amz-content-sha256': payloadHash,
+    };
+
+    const commitAuthorization = createSignature(
+      'POST', commitUrl, commitRequestHeaders,
+      access_key_id, secret_access_key, session_token,
+      commitPayload, awsRegion, 'vod'
+    );
+
+    logger.info(`提交音频上传确认: ${commitUrl}`);
+
+    let commitResponse;
+    try {
+      commitResponse = await axios({
+        method: 'POST',
+        url: commitUrl,
+        headers: {
+          'accept': '*/*',
+          'authorization': commitAuthorization,
+          'content-type': 'application/json',
+          'origin': origin,
+          'referer': RegionUtils.getRefererPath(regionInfo),
+          'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36',
+          'x-amz-date': commitTimestamp,
+          'x-amz-security-token': session_token,
+          'x-amz-content-sha256': payloadHash,
+        },
+        data: commitPayload,
+        validateStatus: () => true,
+      });
+    } catch (fetchError: any) {
+      throw new Error(`提交音频上传网络请求失败 (${vodHost}): ${fetchError.message}`);
+    }
+
+    if (commitResponse.status < 200 || commitResponse.status >= 300) {
+      const errorText = typeof commitResponse.data === 'string' ? commitResponse.data : JSON.stringify(commitResponse.data);
+      throw new Error(`提交音频上传失败: ${commitResponse.status} - ${errorText}`);
+    }
+
+    const commitResult = commitResponse.data;
+    if (commitResult?.ResponseMetadata?.Error) {
+      throw new Error(`提交音频上传失败: ${JSON.stringify(commitResult.ResponseMetadata.Error)}`);
+    }
+
+    if (!commitResult?.Result?.Results || commitResult.Result.Results.length === 0) {
+      throw new Error(`提交音频上传响应缺少结果: ${JSON.stringify(commitResult)}`);
+    }
+
+    const result = commitResult.Result.Results[0];
+    if (!result.Vid) {
+      throw new Error(`提交音频上传响应缺少 Vid: ${JSON.stringify(result)}`);
+    }
+
+    const videoMeta = result.VideoMeta || {};
+    let duration = videoMeta.Duration ? Math.round(videoMeta.Duration * 1000) : 0;
+
+    if (duration <= 0) {
+      duration = parseAudioDuration(buf);
+      logger.info(`VOD 未返回音频时长，本地解析: ${duration}ms`);
+    }
+
+    logger.info(`音频上传完成: vid=${result.Vid}, duration=${duration}ms`);
+
+    return {
+      vid: result.Vid,
+      duration,
+      name: filename || "",
+    };
+  } catch (error: any) {
+    logger.error(`音频Buffer上传失败: ${error.message}`);
+    throw error;
+  }
+}
+
+/**
+ * 从URL下载并通过 VOD 上传音频
+ */
+export async function uploadAudioFromUrl(
+  audioUrl: string,
+  refreshToken: string,
+  regionInfo: RegionInfo,
+): Promise<AudioUploadResult> {
+  try {
+    logger.info(`开始从URL下载并上传音频: ${audioUrl}`);
+
+    const audioResponse = await axios.get(audioUrl, {
+      responseType: 'arraybuffer',
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity,
+    });
+    if (audioResponse.status < 200 || audioResponse.status >= 300) {
+      throw new Error(`下载音频失败: ${audioResponse.status}`);
+    }
+
+    const audioBuffer = audioResponse.data;
+    logger.info(`音频下载完成: ${audioBuffer.byteLength} 字节`);
+
+    const urlFilename = audioUrl.split('/').pop()?.split('?')[0] || "";
+    return await uploadAudioBuffer(audioBuffer, refreshToken, regionInfo, urlFilename);
+  } catch (error: any) {
+    logger.error(`从URL上传音频失败: ${error.message}`);
+    throw error;
+  }
+}
