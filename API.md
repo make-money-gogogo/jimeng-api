@@ -235,10 +235,33 @@ curl -X POST http://localhost:5100/v1/videos/generations \
   -F "video_file_1=@/path/to/motion.mp4"
 ```
 
+音频素材（可选）：
+- multipart：用 `audio_file_1`、`audio_file_2` 上传音频文件（最多 2 个）
+- JSON：同名字段传音频 URL
+- 提示词里用 `@audio_file_1` 引用音频素材
+
 `omni_reference` 约束（服务端校验）：
 - 最多上传 9 张图片（`image_file_1..image_file_9`）
 - 最多上传 3 个视频（`video_file_1..video_file_3`）
-- 图片 + 视频总数不超过 12
+- 最多上传 2 个音频（`audio_file_1..audio_file_2`）
+- 素材总数不超过 12
+
+#### 可用视频模型
+
+| 外部模型名 | 说明 |
+|---|---|
+| `jimeng-video-seedance-2.0` | Seedance 2.0 Pro |
+| `jimeng-video-seedance-2.0-fast` | Seedance 2.0 Fast |
+| `jimeng-video-seedance-2.0-vip` | Seedance 2.0 Pro VIP（720p 输出） |
+| `jimeng-video-seedance-2.0-fast-vip` | Seedance 2.0 Fast VIP（720p 输出） |
+| `jimeng-video-3.5-pro` | 3.5 Pro（默认） |
+| `jimeng-video-3.0` / `3.0-pro` / `3.0-fast` | 3.0 系列 |
+| `jimeng-video-2.0` / `2.0-pro` | 2.0 系列 |
+
+VIP 模型说明：
+- VIP 模型输出分辨率为 720p，需要账号有对应 VIP 权益
+- VIP 模型同样支持 4~15 秒时长和 `omni_reference` / `first_last_frames` 两种模式
+- 仅国内站（CN token）可用
 
 ```bash
 # 纯文生视频

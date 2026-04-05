@@ -9,7 +9,7 @@ import util from "@/lib/util.ts";
 import { getCredit, receiveCredit, request, parseRegionFromToken, getAssistantId, checkImageContent, RegionInfo } from "./core.ts";
 import logger from "@/lib/logger.ts";
 import { SmartPoller, PollingStatus } from "@/lib/smart-poller.ts";
-import { DEFAULT_ASSISTANT_ID_CN, DEFAULT_ASSISTANT_ID_US, DEFAULT_ASSISTANT_ID_HK, DEFAULT_ASSISTANT_ID_JP, DEFAULT_ASSISTANT_ID_SG, DEFAULT_VIDEO_MODEL, DRAFT_VERSION, DRAFT_VERSION_OMNI, OMNI_BENEFIT_TYPE, OMNI_BENEFIT_TYPE_FAST, VIDEO_MODEL_MAP, VIDEO_MODEL_MAP_US, VIDEO_MODEL_MAP_ASIA, STATUS_CODE_MAP } from "@/api/consts/common.ts";
+import { DEFAULT_ASSISTANT_ID_CN, DEFAULT_ASSISTANT_ID_US, DEFAULT_ASSISTANT_ID_HK, DEFAULT_ASSISTANT_ID_JP, DEFAULT_ASSISTANT_ID_SG, DEFAULT_VIDEO_MODEL, DRAFT_VERSION, DRAFT_VERSION_OMNI, DRAFT_VERSION_VIP, OMNI_BENEFIT_TYPE, OMNI_BENEFIT_TYPE_FAST, VIP_BENEFIT_TYPE_PRO, VIP_BENEFIT_TYPE_FAST, VIDEO_MODEL_MAP, VIDEO_MODEL_MAP_US, VIDEO_MODEL_MAP_ASIA, STATUS_CODE_MAP } from "@/api/consts/common.ts";
 import { uploadImageBuffer, ImageUploadResult } from "@/lib/image-uploader.ts";
 import { uploadVideoBuffer, VideoUploadResult } from "@/lib/video-uploader.ts";
 import { extractVideoUrl, fetchHighQualityVideoUrl } from "@/lib/image-utils.ts";
@@ -30,7 +30,7 @@ export function getModel(model: string, regionInfo: RegionInfo) {
   return modelMap[model] || modelMap[DEFAULT_MODEL] || VIDEO_MODEL_MAP[DEFAULT_MODEL];
 }
 
-function getVideoBenefitType(model: string): string {
+function getVideoBenefitType(model: string, isVip: boolean): string {
   // veo3.1 模型 (需先于 veo3 检查)
   if (model.includes("veo3.1")) {
     return "generate_video_veo3.1";
@@ -42,6 +42,13 @@ function getVideoBenefitType(model: string): string {
   // sora2 模型
   if (model.includes("sora2")) {
     return "generate_video_sora2";
+  }
+  // VIP vision 模型
+  if (isVip && model.includes("40_pro")) {
+    return VIP_BENEFIT_TYPE_PRO;
+  }
+  if (isVip && model.includes("40")) {
+    return VIP_BENEFIT_TYPE_FAST;
   }
   if (model.includes("40_pro")) {
     return "dreamina_video_seedance_20_pro";
@@ -56,6 +63,10 @@ function getVideoBenefitType(model: string): string {
     return "dreamina_video_seedance_15";
   }
   return "basic_video_operation_vgfm_v_three";
+}
+
+function isVipVisionModel(model: string): boolean {
+  return model.includes("_pro_vision") || (model.includes("_vision") && model.includes("40"));
 }
 
 // 处理本地上传的文件
@@ -293,8 +304,9 @@ async function submitVideoDraftAndGetHistoryId(
   const isVeo3 = model.includes("veo3");
   const isSora2 = model.includes("sora2");
   const is35Pro = model.includes("3.5_pro");
-  const is40Pro = model.includes("40_pro");
-  const is40 = model.includes("40") && !model.includes("40_pro");
+  const isVip = isVipVisionModel(model);
+  const is40Pro = model.includes("40_pro"); // 含 VIP pro_vision
+  const is40 = model.includes("40") && !model.includes("40_pro"); // 含 VIP vision (non-pro)
   // 只有 video-3.0 和 video-3.0-fast 支持 resolution 参数（3.0-pro 和 3.5-pro 不支持）
   const supportsResolution = (model.includes("vgfm_3.0") || model.includes("vgfm_3.0_fast")) && !model.includes("_pro");
 
@@ -357,11 +369,14 @@ async function submitVideoDraftAndGetHistoryId(
 
   const isOmniMode = functionMode === "omni_reference";
 
-  // omni_reference 仅支持 seedance 2.0 (40_pro) 和 2.0-fast (40) 模型
+  // omni_reference 仅支持 seedance 2.0 系列模型（含 VIP）
   if (isOmniMode && !is40Pro && !is40) {
     throw new APIException(EX.API_REQUEST_FAILED,
-      `omni_reference 模式仅支持 jimeng-video-seedance-2.0 和 jimeng-video-seedance-2.0-fast 模型`);
+      `omni_reference 模式仅支持 jimeng-video-seedance-2.0 系列模型（含 VIP）`);
   }
+
+  // VIP / 非 VIP 的 draft 版本
+  const draftVersion = isVip ? DRAFT_VERSION_VIP : DRAFT_VERSION_OMNI;
 
   let requestData: any;
 
@@ -372,7 +387,7 @@ async function submitVideoDraftAndGetHistoryId(
     // 素材注册表: fieldName → { idx, type, uploadResult }
     interface MaterialEntry {
       idx: number;
-      type: "image" | "video";
+      type: "image" | "video" | "audio";
       fieldName: string;
       originalFilename: string;
       imageUri?: string;
@@ -380,6 +395,7 @@ async function submitVideoDraftAndGetHistoryId(
       imageHeight?: number;
       imageFormat?: string;
       videoResult?: VideoUploadResult;
+      audioUri?: string;
     }
     const materialRegistry: Map<string, MaterialEntry> = new Map();
     let materialIdx = 0;
@@ -388,8 +404,10 @@ async function submitVideoDraftAndGetHistoryId(
     const canonicalKeys = new Set<string>();
     canonicalKeys.add('image_file');
     canonicalKeys.add('video_file');
+    canonicalKeys.add('audio_file');
     for (let i = 1; i <= 9; i++) canonicalKeys.add(`image_file_${i}`);
     for (let i = 1; i <= 3; i++) canonicalKeys.add(`video_file_${i}`);
+    for (let i = 1; i <= 2; i++) canonicalKeys.add(`audio_file_${i}`);
 
     // 安全注册别名：originalFilename 不与 canonical key 冲突时才注册
     function registerAlias(filename: string, entry: MaterialEntry) {
@@ -398,15 +416,17 @@ async function submitVideoDraftAndGetHistoryId(
       }
     }
 
-    // 收集所有需要处理的图片和视频字段
+    // 收集所有需要处理的图片、视频和音频字段
     const imageFields: string[] = [];
     const videoFields: string[] = [];
+    const audioFields: string[] = [];
 
     // 检测上传的文件
     if (files) {
       for (const fieldName of Object.keys(files)) {
         if (fieldName === 'image_file' || fieldName.startsWith('image_file_')) imageFields.push(fieldName);
         else if (fieldName === 'video_file' || fieldName.startsWith('video_file_')) videoFields.push(fieldName);
+        else if (fieldName === 'audio_file' || fieldName.startsWith('audio_file_')) audioFields.push(fieldName);
       }
     }
 
@@ -423,6 +443,12 @@ async function submitVideoDraftAndGetHistoryId(
         if (!videoFields.includes(fieldName)) videoFields.push(fieldName);
       }
     }
+    for (let i = 1; i <= 2; i++) {
+      const fieldName = `audio_file_${i}`;
+      if (typeof httpRequest?.body?.[fieldName] === 'string' && httpRequest.body[fieldName].startsWith('http')) {
+        if (!audioFields.includes(fieldName)) audioFields.push(fieldName);
+      }
+    }
     // 检测不带数字后缀的裸名 URL 字段
     if (typeof httpRequest?.body?.image_file === 'string' && httpRequest.body.image_file.startsWith('http')) {
       if (!imageFields.includes('image_file')) imageFields.push('image_file');
@@ -430,12 +456,15 @@ async function submitVideoDraftAndGetHistoryId(
     if (typeof httpRequest?.body?.video_file === 'string' && httpRequest.body.video_file.startsWith('http')) {
       if (!videoFields.includes('video_file')) videoFields.push('video_file');
     }
+    if (typeof httpRequest?.body?.audio_file === 'string' && httpRequest.body.audio_file.startsWith('http')) {
+      if (!audioFields.includes('audio_file')) audioFields.push('audio_file');
+    }
 
     // 检查是否有素材
     const hasFilePaths = filePaths && filePaths.length > 0;
-    if (imageFields.length === 0 && videoFields.length === 0 && !hasFilePaths) {
+    if (imageFields.length === 0 && videoFields.length === 0 && audioFields.length === 0 && !hasFilePaths) {
       throw new APIException(EX.API_REQUEST_FAILED,
-        `omni_reference 模式需要至少上传一个素材文件 (image_file_*, video_file_*) 或提供素材URL`);
+        `omni_reference 模式需要至少上传一个素材文件 (image_file_*, video_file_*, audio_file_*) 或提供素材URL`);
     }
 
     let totalVideoDuration = 0; // 累计视频时长
@@ -579,6 +608,44 @@ async function submitVideoDraftAndGetHistoryId(
 
     logger.info(`[omni] 视频总时长: ${totalVideoDuration.toFixed(2)}s`);
 
+    // 串行上传音频素材
+    for (const fieldName of audioFields) {
+      const audioFile = files?.[fieldName];
+      const audioUrlField = httpRequest?.body?.[fieldName];
+
+      try {
+        logger.info(`[omni] 上传 ${fieldName}`);
+
+        if (audioFile) {
+          const buf = await fs.readFile(audioFile.filepath);
+          const audioResult = await uploadImageBuffer(buf, refreshToken, regionInfo);
+          const entry: MaterialEntry = {
+            idx: materialIdx++,
+            type: "audio",
+            fieldName,
+            originalFilename: audioFile.originalFilename,
+            audioUri: audioResult.uri,
+          };
+          materialRegistry.set(fieldName, entry);
+          registerAlias(audioFile.originalFilename, entry);
+          logger.info(`[omni] ${fieldName} 上传成功: ${audioResult.uri}`);
+        } else if (audioUrlField && typeof audioUrlField === 'string' && audioUrlField.startsWith('http')) {
+          const audioResult = await uploadImageFromUrl(audioUrlField, refreshToken, regionInfo);
+          const entry: MaterialEntry = {
+            idx: materialIdx++,
+            type: "audio",
+            fieldName,
+            originalFilename: audioUrlField,
+            audioUri: audioResult.uri,
+          };
+          materialRegistry.set(fieldName, entry);
+          logger.info(`[omni] ${fieldName} URL上传成功: ${audioResult.uri}`);
+        }
+      } catch (error: any) {
+        throw new APIException(EX.API_REQUEST_FAILED, `${fieldName} 处理失败: ${error.message}`);
+      }
+    }
+
     // 构建 material_list（按注册顺序）
     const orderedEntries = [...new Map([...materialRegistry].filter(([k, v]) => k === v.fieldName)).values()]
       .sort((a, b) => a.idx - b.idx);
@@ -606,7 +673,7 @@ async function submitVideoDraftAndGetHistoryId(
           },
         });
         materialTypes.push(1);
-      } else {
+      } else if (entry.type === "video") {
         const vm = entry.videoResult!;
         material_list.push({
           type: "",
@@ -625,6 +692,20 @@ async function submitVideoDraftAndGetHistoryId(
           },
         });
         materialTypes.push(2);
+      } else if (entry.type === "audio") {
+        material_list.push({
+          type: "",
+          id: util.uuid(),
+          material_type: "audio",
+          audio_info: {
+            type: "audio",
+            id: util.uuid(),
+            source_from: "upload",
+            name: "",
+            uri: entry.audioUri,
+          },
+        });
+        materialTypes.push(3);
       }
     }
 
@@ -637,16 +718,18 @@ async function submitVideoDraftAndGetHistoryId(
     const componentId = util.uuid();
     const submitId = util.uuid();
 
-    const sceneOption = {
+    const sceneOption: Record<string, unknown> = {
       type: "video",
       scene: "BasicVideoGenerateButton",
+      ...(isVip ? { resolution: "720p" } : {}),
       modelReqKey: model,
       videoDuration: actualDuration,
+      ...(isVip ? { inputVideoDuration: 0 } : {}),
       materialTypes,
       reportParams: {
         enterSource: "generate",
         vipSource: "generate",
-        extraVipFunctionKey: model,
+        extraVipFunctionKey: isVip ? `${model}-720p` : model,
         useVipFunctionDetailsReporterHoc: true,
       },
     };
@@ -661,18 +744,22 @@ async function submitVideoDraftAndGetHistoryId(
       sceneOptions: JSON.stringify([sceneOption]),
     });
 
-    // 根据模型选择 benefit_type
-    const omniBenefitType = is40 ? OMNI_BENEFIT_TYPE_FAST : OMNI_BENEFIT_TYPE;
+    // VIP 用专属 benefit_type，否则走 omni 模式常量
+    const omniBenefitType = isVip
+      ? getVideoBenefitType(model, true)
+      : (is40 ? OMNI_BENEFIT_TYPE_FAST : OMNI_BENEFIT_TYPE);
 
     requestData = {
       params: {
         aigc_features: "app_lip_sync",
         web_version: "7.5.0",
-        da_version: DRAFT_VERSION_OMNI,
+        da_version: draftVersion,
+        ...(isVip ? { commerce_with_input_video: "1" } : {}),
       },
       data: {
         extend: {
           root_model: model,
+          ...(isVip ? { workspace_id: 0 } : {}),
           m_video_commerce_info: {
             benefit_type: omniBenefitType,
             resource_id: "generate_video",
@@ -691,10 +778,10 @@ async function submitVideoDraftAndGetHistoryId(
         draft_content: JSON.stringify({
           type: "draft",
           id: util.uuid(),
-          min_version: DRAFT_VERSION_OMNI,
+          min_version: draftVersion,
           min_features: ["AIGC_Video_UnifiedEdit"],
           is_from_tsn: true,
-          version: DRAFT_VERSION_OMNI,
+          version: draftVersion,
           main_component_id: componentId,
           component_list: [{
             type: "video_base_component",
@@ -722,7 +809,7 @@ async function submitVideoDraftAndGetHistoryId(
                   video_gen_inputs: [{
                     type: "",
                     id: util.uuid(),
-                    min_version: DRAFT_VERSION_OMNI,
+                    min_version: draftVersion,
                     prompt: "",
                     video_mode: 2,
                     fps: 24,
@@ -832,17 +919,20 @@ async function submitVideoDraftAndGetHistoryId(
     const originSubmitId = util.uuid();
     const flFunctionMode = "first_last_frames";
 
-    const sceneOption = {
+    const flDraftVersion = isVip ? DRAFT_VERSION_VIP : DRAFT_VERSION;
+
+    const sceneOption: Record<string, unknown> = {
       type: "video",
       scene: "BasicVideoGenerateButton",
-      ...(supportsResolution ? { resolution } : {}),
+      ...(isVip ? { resolution: "720p" } : (supportsResolution ? { resolution } : {})),
       modelReqKey: model,
       videoDuration: actualDuration,
+      ...(isVip ? { inputVideoDuration: 0 } : {}),
       materialTypes: [] as number[],
       reportParams: {
         enterSource: "generate",
         vipSource: "generate",
-        extraVipFunctionKey: supportsResolution ? `${model}-${resolution}` : model,
+        extraVipFunctionKey: isVip ? `${model}-720p` : (supportsResolution ? `${model}-${resolution}` : model),
         useVipFunctionDetailsReporterHoc: true,
       },
     };
@@ -865,23 +955,27 @@ async function submitVideoDraftAndGetHistoryId(
 
     logger.info(`视频生成模式: ${uploadIDs.length}张图片 (首帧: ${!!first_frame_image}, 尾帧: ${!!end_frame_image}), resolution: ${resolution}`);
 
+    const flBenefitType = getVideoBenefitType(model, isVip);
+
     requestData = {
       params: {
         aigc_features: "app_lip_sync",
         web_version: "7.5.0",
-        da_version: DRAFT_VERSION,
+        da_version: flDraftVersion,
+        ...(isVip ? { commerce_with_input_video: "1" } : {}),
       },
       data: {
         extend: {
           root_model: model,
+          ...(isVip ? { workspace_id: 0 } : {}),
           m_video_commerce_info: {
-            benefit_type: getVideoBenefitType(model),
+            benefit_type: flBenefitType,
             resource_id: "generate_video",
             resource_id_type: "str",
             resource_sub_type: "aigc",
           },
           m_video_commerce_info_list: [{
-            benefit_type: getVideoBenefitType(model),
+            benefit_type: flBenefitType,
             resource_id: "generate_video",
             resource_id_type: "str",
             resource_sub_type: "aigc",
@@ -892,10 +986,10 @@ async function submitVideoDraftAndGetHistoryId(
         draft_content: JSON.stringify({
           type: "draft",
           id: util.uuid(),
-          min_version: "3.0.5",
+          min_version: isVip ? flDraftVersion : "3.0.5",
           min_features: [],
           is_from_tsn: true,
-          version: DRAFT_VERSION,
+          version: flDraftVersion,
           main_component_id: componentId,
           component_list: [{
             type: "video_base_component",
@@ -923,7 +1017,7 @@ async function submitVideoDraftAndGetHistoryId(
                   video_gen_inputs: [{
                     type: "",
                     id: util.uuid(),
-                    min_version: "3.0.5",
+                    min_version: isVip ? flDraftVersion : "3.0.5",
                     prompt,
                     video_mode: 2,
                     fps: 24,

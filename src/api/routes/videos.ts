@@ -84,10 +84,9 @@ export default {
                 } else if (modelName.includes('3.5-pro') || modelName.includes('3.5_pro')) {
                     validDurations = [5, 10, 12];
                     errorMessage = '3.5-pro 模型仅支持 5、10、12 秒时长';
-                } else if (modelName.includes('seedance-2.0') || modelName.includes('40_pro') || modelName.includes('40-pro') || modelName.includes('seedance-2.0-fast')) {
-                    // seedance 2.0 和 2.0-fast 支持 4~15 秒任意整数
+                } else if (modelName.includes('seedance-2.0') || modelName.includes('40_pro') || modelName.includes('40-pro') || modelName.includes('seedance-2.0-fast') || modelName.includes('seedance-2.0-vip') || modelName.includes('seedance-2.0-fast-vip')) {
                     if (durationValue < 4 || durationValue > 15) {
-                        throw new Error(`seedance 2.0/2.0-fast 模型支持 4~15 秒时长，当前值: ${durationValue}`);
+                        throw new Error(`seedance 2.0 系列模型支持 4~15 秒时长，当前值: ${durationValue}`);
                     }
                 } else {
                     // 其他模型支持 5 或 10 秒
@@ -113,11 +112,13 @@ export default {
                 // 统计各类型文件数量
                 let imageCount = 0;
                 let videoCount = 0;
+                let audioCount = 0;
 
                 // 统计上传的文件
                 for (const fieldName of Object.keys(uploadedFiles)) {
-                    if (fieldName.startsWith('image_file_')) imageCount++;
-                    else if (fieldName.startsWith('video_file_')) videoCount++;
+                    if (fieldName.startsWith('image_file')) imageCount++;
+                    else if (fieldName.startsWith('video_file')) videoCount++;
+                    else if (fieldName.startsWith('audio_file')) audioCount++;
                 }
 
                 // 统计URL字段
@@ -133,6 +134,12 @@ export default {
                         videoCount++;
                     }
                 }
+                for (let i = 1; i <= 2; i++) {
+                    const fieldName = `audio_file_${i}`;
+                    if (typeof request.body[fieldName] === 'string' && request.body[fieldName].startsWith('http')) {
+                        audioCount++;
+                    }
+                }
 
                 // 验证数量限制
                 if (imageCount > 9) {
@@ -141,15 +148,18 @@ export default {
                 if (videoCount > 3) {
                     throw new Error('全能模式最多上传3个视频');
                 }
+                if (audioCount > 2) {
+                    throw new Error('全能模式最多上传2个音频');
+                }
 
-                const totalCount = imageCount + videoCount;
+                const totalCount = imageCount + videoCount + audioCount;
                 if (totalCount > 12) {
-                    throw new Error('全能模式图片+视频总数不超过12个');
+                    throw new Error('全能模式素材总数不超过12个');
                 }
                 if (totalCount === 0) {
                     const hasFilePaths = (request.body.filePaths?.length > 0) || (request.body.file_paths?.length > 0);
                     if (!hasFilePaths) {
-                        throw new Error('全能模式至少需要上传1个素材文件(图片或视频)');
+                        throw new Error('全能模式至少需要上传1个素材文件(图片、视频或音频)');
                     }
                 }
             } else {

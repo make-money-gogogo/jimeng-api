@@ -38,10 +38,15 @@ export const DEFAULT_VIDEO_MODEL = "jimeng-video-3.5-pro";
 export const DRAFT_VERSION = "3.3.9";
 export const DRAFT_MIN_VERSION = "3.0.2";
 export const DRAFT_VERSION_OMNI = "3.3.9";
+export const DRAFT_VERSION_VIP = "3.3.12";
 
 // omni_reference 模式专用 benefit_type
 export const OMNI_BENEFIT_TYPE = "dreamina_video_seedance_20_video_add";
 export const OMNI_BENEFIT_TYPE_FAST = "dreamina_seedance_20_fast_with_video";
+
+// VIP 模型专用 benefit_type
+export const VIP_BENEFIT_TYPE_PRO = "seedance_20_pro_720p_output";
+export const VIP_BENEFIT_TYPE_FAST = "seedance_20_fast_720p_output";
 
 // 图像模型映射
 export const IMAGE_MODEL_MAP = {
@@ -79,6 +84,8 @@ export const IMAGE_MODEL_MAP_ASIA = {
 export const VIDEO_MODEL_MAP = {
   "jimeng-video-seedance-2.0": "dreamina_seedance_40_pro",
   "jimeng-video-seedance-2.0-fast": "dreamina_seedance_40",
+  "jimeng-video-seedance-2.0-vip": "dreamina_seedance_40_pro_vision",
+  "jimeng-video-seedance-2.0-fast-vip": "dreamina_seedance_40_vision",
   "jimeng-video-3.5-pro": "dreamina_ic_generate_video_model_vgfm_3.5_pro",
   "jimeng-video-3.0-pro": "dreamina_ic_generate_video_model_vgfm_3.0_pro",
   "jimeng-video-3.0": "dreamina_ic_generate_video_model_vgfm_3.0",
