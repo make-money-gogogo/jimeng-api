@@ -94,6 +94,34 @@ curl http://localhost:5100/v1/models
 
 前缀：`/v1/images`
 
+#### 可用图像模型
+
+| 外部模型名 | 说明 | 可用区域 |
+|---|---|---|
+| `jimeng-5.0` | 最新旗舰 | CN |
+| `jimeng-4.6` | 4.6 版本 | CN |
+| `jimeng-4.5` | 默认模型 | CN / US / Asia |
+| `jimeng-4.1` | 4.1 版本 | CN / US / Asia |
+| `jimeng-4.0` | 4.0 版本 | CN / US / Asia |
+| `jimeng-3.1` | 3.1 艺术风格 | CN |
+| `jimeng-3.0` | 3.0 基础 | CN / US / Asia |
+| `nanobanana` | Gemini Flash Image | US / Asia |
+| `nanobananapro` | Dreamina Image Lib | US / Asia |
+
+#### 支持的画幅比
+
+`1:1`、`4:3`、`3:4`、`16:9`、`9:16`、`3:2`、`2:3`、`21:9`
+
+#### 支持的分辨率档位
+
+| 档位值 | 示例尺寸（1:1 基准） | 说明 |
+|---|---|---|
+| `1k` | 1024×1024 | 默认 |
+| `2k` | 2048×2048 | 高清 |
+| `4k` | 4096×4096 | 超高清 |
+
+> 实际输出尺寸由 `ratio` + `resolution` 组合决定，例如 `16:9` + `2k` → 2560×1440。
+
 ### 4.1 文生图（同步）
 
 **POST** `/v1/images/generations`
@@ -103,10 +131,10 @@ curl http://localhost:5100/v1/models
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `prompt` | string | 是 | 正向提示词 |
-| `model` | string | 否 | 默认 `jimeng-4.5` |
+| `model` | string | 否 | 默认 `jimeng-4.5`，见上方模型表 |
 | `negative_prompt` | string | 否 | 负向提示词 |
-| `ratio` | string | 否 | 画幅比，如 `1:1`、`16:9`、`9:16` |
-| `resolution` | string | 否 | 分辨率档位，如 `1080p` |
+| `ratio` | string | 否 | 画幅比，默认 `1:1` |
+| `resolution` | string | 否 | 分辨率档位：`1k`（默认）/ `2k` / `4k` |
 | `intelligent_ratio` | boolean | 否 | 智能比例 |
 | `sample_strength` | number | 否 | 生成强度，0~1 |
 | `response_format` | string | 否 | `url`（默认）或 `b64_json` |
@@ -120,7 +148,9 @@ curl -X POST http://localhost:5100/v1/images/generations \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "一只在森林里奔跑的狐狸，写实风格",
-    "ratio": "16:9"
+    "model": "jimeng-4.5",
+    "ratio": "16:9",
+    "resolution": "2k"
   }'
 ```
 
@@ -216,6 +246,7 @@ curl -X POST http://localhost:5100/v1/images/compositions \
 - `@image_file_1`：引用图片槽位 1
 - `@image_file_2`：引用图片槽位 2
 - `@video_file_1`：引用视频槽位 1
+- `@audio_file_1`：引用音频槽位 1
 
 注意事项：
 - `@xxx` 里 `xxx` 必须与你实际提交过的素材字段名一致（例如你传了 `image_file_2`，提示词就写 `@image_file_2`）
@@ -239,6 +270,7 @@ curl -X POST http://localhost:5100/v1/videos/generations \
 - multipart：用 `audio_file_1`、`audio_file_2` 上传音频文件（最多 2 个）
 - JSON：同名字段传音频 URL
 - 提示词里用 `@audio_file_1` 引用音频素材
+- 音频通过 VOD 管道上传（与视频相同），在 `material_list` 中以 `vid` + `duration`（毫秒）标识
 
 `omni_reference` 约束（服务端校验）：
 - 最多上传 9 张图片（`image_file_1..image_file_9`）
@@ -246,22 +278,119 @@ curl -X POST http://localhost:5100/v1/videos/generations \
 - 最多上传 2 个音频（`audio_file_1..audio_file_2`）
 - 素材总数不超过 12
 
+`omni_reference` 示例（JSON + 图片 + 音频）：
+
+```bash
+curl -X POST http://localhost:5100/v1/videos/generations \
+  -H "Authorization: Bearer <refresh_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "functionMode": "omni_reference",
+    "prompt": "@image_file_1背景，配合@audio_file_1的音乐节奏",
+    "ratio": "16:9",
+    "duration": 8,
+    "model": "jimeng-video-seedance-2.0",
+    "async": true,
+    "image_file_1": "https://example.com/background.jpg",
+    "audio_file_1": "https://example.com/music.mp3"
+  }'
+```
+
+`omni_reference` 示例（图片 + 视频 + 音频混合）：
+
+```bash
+curl -X POST http://localhost:5100/v1/videos/generations \
+  -H "Authorization: Bearer <refresh_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "functionMode": "omni_reference",
+    "prompt": "@image_file_1作为背景，@image_file_2角色在草地上奔跑，配合@audio_file_1背景音乐",
+    "ratio": "16:9",
+    "duration": 10,
+    "model": "jimeng-video-seedance-2.0",
+    "async": true,
+    "image_file_1": "https://example.com/bg.png",
+    "image_file_2": "https://example.com/character.png",
+    "audio_file_1": "https://example.com/bgm.mp3"
+  }'
+```
+
+`omni_reference` 示例（multipart 混合上传）：
+
+```bash
+curl -X POST http://localhost:5100/v1/videos/generations \
+  -H "Authorization: Bearer <refresh_token>" \
+  -F "functionMode=omni_reference" \
+  -F "prompt=@image_file_1作为首帧，运动参考@video_file_1，配乐@audio_file_1" \
+  -F "ratio=16:9" \
+  -F "duration=8" \
+  -F "model=jimeng-video-seedance-2.0" \
+  -F "async=true" \
+  -F "image_file_1=@/path/to/start.jpg" \
+  -F "video_file_1=@/path/to/motion.mp4" \
+  -F "audio_file_1=@/path/to/music.mp3"
+```
+
+`omni_reference` 示例（VIP 模型 + 音频）：
+
+```bash
+curl -X POST http://localhost:5100/v1/videos/generations \
+  -H "Authorization: Bearer <refresh_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "functionMode": "omni_reference",
+    "prompt": "@image_file_1画面配合@audio_file_1的节奏律动",
+    "ratio": "16:9",
+    "duration": 12,
+    "model": "jimeng-video-seedance-2.0-vip",
+    "async": true,
+    "image_file_1": "https://example.com/scene.jpg",
+    "audio_file_1": "https://example.com/beat.mp3"
+  }'
+```
+
 #### 可用视频模型
 
-| 外部模型名 | 说明 |
-|---|---|
-| `jimeng-video-seedance-2.0` | Seedance 2.0 Pro |
-| `jimeng-video-seedance-2.0-fast` | Seedance 2.0 Fast |
-| `jimeng-video-seedance-2.0-vip` | Seedance 2.0 Pro VIP（720p 输出） |
-| `jimeng-video-seedance-2.0-fast-vip` | Seedance 2.0 Fast VIP（720p 输出） |
-| `jimeng-video-3.5-pro` | 3.5 Pro（默认） |
-| `jimeng-video-3.0` / `3.0-pro` / `3.0-fast` | 3.0 系列 |
-| `jimeng-video-2.0` / `2.0-pro` | 2.0 系列 |
+**国内站（CN token）：**
+
+| 外部模型名 | 时长 | 说明 |
+|---|---|---|
+| `jimeng-video-seedance-2.0` | 4~15秒（整数） | Seedance 2.0 Pro，支持 omni_reference |
+| `jimeng-video-seedance-2.0-fast` | 4~15秒（整数） | Seedance 2.0 Fast，支持 omni_reference |
+| `jimeng-video-seedance-2.0-vip` | 4~15秒（整数） | Seedance 2.0 Pro VIP，720p 输出，需 VIP 权益 |
+| `jimeng-video-seedance-2.0-fast-vip` | 4~15秒（整数） | Seedance 2.0 Fast VIP，720p 输出，需 VIP 权益 |
+| `jimeng-video-3.5-pro` | 5 / 10 / 12秒 | 3.5 Pro（默认模型） |
+| `jimeng-video-3.0-pro` | 5 / 10秒 | 3.0 Pro |
+| `jimeng-video-3.0` | 5 / 10秒 | 3.0 标准，支持 `resolution` 参数 |
+| `jimeng-video-3.0-fast` | 5 / 10秒 | 3.0 Fast，支持 `resolution` 参数 |
+| `jimeng-video-2.0` | 5 / 10秒 | 2.0 标准 |
+| `jimeng-video-2.0-pro` | 5 / 10秒 | 2.0 Pro |
+
+**亚洲国际站（HK/JP/SG token）：**
+
+| 外部模型名 | 时长 | 说明 |
+|---|---|---|
+| `jimeng-video-veo3` | 固定 8秒 | Google Veo3 |
+| `jimeng-video-veo3.1` | 固定 8秒 | Google Veo3.1 |
+| `jimeng-video-sora2` | 4 / 8 / 12秒 | OpenAI Sora2 |
+| `jimeng-video-3.5-pro` | 5 / 10 / 12秒 | 3.5 Pro |
+| 以及 3.0 / 2.0 系列 | | 同国内站 |
+
+**美国站（US token）：**
+
+| 外部模型名 | 时长 | 说明 |
+|---|---|---|
+| `jimeng-video-3.5-pro` | 5 / 10 / 12秒 | 3.5 Pro |
+| `jimeng-video-3.0` | 5 / 10秒 | 3.0 标准 |
+
+> `omni_reference` 全能模式仅 Seedance 2.0 系列（含 VIP）支持。其他模型使用默认的 `first_last_frames` 模式。
 
 VIP 模型说明：
 - VIP 模型输出分辨率为 720p，需要账号有对应 VIP 权益
 - VIP 模型同样支持 4~15 秒时长和 `omni_reference` / `first_last_frames` 两种模式
 - 仅国内站（CN token）可用
+
+> **Seedance 自动异步**：当调用方未显式传 `async` 参数时，Seedance 2.0 系列模型默认走异步提交（仅返回任务 ID），需通过轮询接口获取结果。传 `"async": false` 可强制同步等待。
 
 ```bash
 # 纯文生视频
@@ -299,22 +428,55 @@ curl -X POST http://localhost:5100/v1/videos/generations \
 
 ### 5.2 生成视频（异步提交 + 轮询）
 
+异步提交（加 `"async": true`，或 Seedance 2.0 系列默认异步）：
+
 ```bash
-# 提交
 curl -X POST http://localhost:5100/v1/videos/generations \
   -H "Authorization: Bearer <refresh_token>" \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "星空延时摄影",
+    "model": "jimeng-video-seedance-2.0",
+    "ratio": "16:9",
+    "duration": 8,
     "async": true
   }'
+```
 
-# 轮询
+返回示例：
+
+```json
+{
+  "created": 1711234567,
+  "object": "video_generation_job",
+  "id": "7486512345678901234"
+}
+```
+
+轮询任务状态：
+
+**POST** `/v1/videos/generations/status`
+
+```bash
 curl -X POST http://localhost:5100/v1/videos/generations/status \
   -H "Authorization: Bearer <refresh_token>" \
   -H "Content-Type: application/json" \
-  -d '{"id": "<job_id>"}'
+  -d '{"id": "7486512345678901234"}'
 ```
+
+轮询响应字段：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | string | 任务 ID |
+| `object` | string | 固定 `video_generation_job` |
+| `status` | string | `queued` / `processing` / `succeeded` / `failed` |
+| `upstream_status` | number | 上游原始状态码（10=成功, 20=处理中, 30=失败, 50=完成） |
+| `fail_code` | string | 失败时的错误码 |
+| `url` | string | 成功时的视频 URL |
+| `data` | array | `[{ "url": "..." }]`，成功时返回 |
+
+轮询建议：每 3~5 秒查询一次，Seedance 2.0 生成通常需要 2~8 分钟。
 
 ---
 
@@ -352,6 +514,7 @@ curl -X POST http://localhost:5100/token/receive \
 | `SERVER_PORT` | 监听端口 |
 | `SERVER_HOST` | 监听地址，默认配置见 `configs` |
 | `SERVER_ENV` | 配置子目录名，默认 `dev`，对应 `configs/<SERVER_ENV>/` |
+| `SERVER_API_KEY` | 服务级 API Key，设置后所有请求需通过 `X-API-Key` 头或 `?api_key` 参数鉴权 |
 | `JIMENG_BROWSER_GENERATE` | `1`/`true`/`yes`/`on` 时，国内站部分生成请求走 Chromium 降低风控概率 |
 | `JIMENG_BROWSER_HEADLESS` | 是否无头；默认无头 |
 | `JIMENG_BROWSER_SINGLE_PROCESS` | 默认不要开启（云端易崩溃）；仅在明确测试通过时设为 `force` |
