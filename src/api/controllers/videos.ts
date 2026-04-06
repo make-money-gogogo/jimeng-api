@@ -172,9 +172,9 @@ export async function submitVideoGenerationAsync(
   prompt: string,
   options: VideoGenerationOptions,
   refreshToken: string
-): Promise<{ id: string }> {
-  const id = await submitVideoDraftAndGetHistoryId(_model, prompt, options, refreshToken);
-  return { id };
+): Promise<{ id: string; submit_id: string }> {
+  const { historyId, submitId } = await submitVideoDraftAndGetHistoryId(_model, prompt, options, refreshToken);
+  return { id: historyId, submit_id: submitId };
 }
 
 /**
@@ -334,6 +334,56 @@ export async function queryVideoGenerationStatusBatch(
 }
 
 /**
+ * 批量查询多个视频任务状态（通过 submit_ids，即本地生成的 UUID）。
+ * 与 queryVideoGenerationStatusBatch 逻辑相同，仅查询参数不同。
+ */
+export async function queryVideoGenerationStatusBatchBySubmitIds(
+  submitIds: string[],
+  refreshToken: string
+): ReturnType<typeof queryVideoGenerationStatusBatch> {
+  if (submitIds.length === 0) return {};
+
+  const result = await request("post", "/mweb/v1/get_history_by_ids", refreshToken, {
+    data: { submit_ids: submitIds },
+  });
+
+  const entries = await Promise.all(
+    submitIds.map(async (submitId) => {
+      const historyData = result[submitId];
+      if (!historyData) {
+        return [submitId, { id: submitId, object: "video_generation_job" as const, status: "queued" as const, upstream_status: null, fail_code: null, url: null, data: [] }] as const;
+      }
+      const st = historyData.status as number;
+      const item_list = historyData.item_list || [];
+
+      if (st === 30) {
+        return [submitId, { id: submitId, object: "video_generation_job" as const, status: "failed" as const, upstream_status: st, fail_code: historyData.fail_code ?? null, url: null, data: [] }] as const;
+      }
+
+      const itemId = item_list?.[0]?.item_id || item_list?.[0]?.id || item_list?.[0]?.local_item_id || item_list?.[0]?.common_attr?.id;
+      let url: string | null = null;
+      if (itemId) {
+        try {
+          url = await fetchHighQualityVideoUrl(String(itemId), refreshToken);
+        } catch {
+          // ignore
+        }
+      }
+      if (!url && item_list[0]) {
+        url = extractVideoUrl(item_list[0]);
+      }
+
+      if ((st === 10 || st === 50) && url) {
+        return [submitId, { id: submitId, object: "video_generation_job" as const, status: "succeeded" as const, upstream_status: st, fail_code: null, url, data: [{ url }] }] as const;
+      }
+      return [submitId, { id: submitId, object: "video_generation_job" as const, status: "processing" as const, upstream_status: st, fail_code: historyData.fail_code ?? null, url, data: url ? [{ url }] : [] }] as const;
+    })
+  );
+
+  return Object.fromEntries(entries);
+}
+
+/**
  * 批量查询视频任务排队进度（get_history_queue_info）。
  */
 export async function queryVideoQueueInfo(
@@ -387,7 +437,7 @@ async function submitVideoDraftAndGetHistoryId(
     functionMode = "first_last_frames",
   }: VideoGenerationOptions,
   refreshToken: string
-): Promise<string> {
+): Promise<{ historyId: string; submitId: string }> {
   // 检测区域
   const regionInfo = parseRegionFromToken(refreshToken);
   const { isInternational } = regionInfo;
@@ -471,6 +521,9 @@ async function submitVideoDraftAndGetHistoryId(
 
   // VIP / 非 VIP 的 draft 版本
   const draftVersion = isVip ? DRAFT_VERSION_VIP : DRAFT_VERSION_OMNI;
+
+  // submit_id 由我们本地生成，提前确定，可供批量查询使用
+  const submitId = util.uuid();
 
   let requestData: any;
 
@@ -814,7 +867,6 @@ async function submitVideoDraftAndGetHistoryId(
 
     // 构建 omni payload
     const componentId = util.uuid();
-    const submitId = util.uuid();
 
     const sceneOption: Record<string, unknown> = {
       type: "video",
@@ -1088,7 +1140,7 @@ async function submitVideoDraftAndGetHistoryId(
             resource_sub_type: "aigc",
           }],
         },
-        submit_id: util.uuid(),
+        submit_id: submitId,
         metrics_extra: metricsExtra,
         draft_content: JSON.stringify({
           type: "draft",
@@ -1170,8 +1222,8 @@ async function submitVideoDraftAndGetHistoryId(
   if (!historyId)
     throw new APIException(EX.API_IMAGE_GENERATION_FAILED, "记录ID不存在");
 
-  logger.info(`视频生成任务已提交，history_id: ${historyId}，等待生成完成...`);
-  return historyId;
+  logger.info(`视频生成任务已提交，history_id: ${historyId}，submit_id: ${submitId}`);
+  return { historyId, submitId };
 }
 
 /**
@@ -1183,7 +1235,7 @@ export async function generateVideo(
   options: VideoGenerationOptions,
   refreshToken: string
 ) {
-  const historyId = await submitVideoDraftAndGetHistoryId(_model, prompt, options, refreshToken);
+  const { historyId } = await submitVideoDraftAndGetHistoryId(_model, prompt, options, refreshToken);
 
   // 首次查询前等待，让服务器有时间处理请求
   await new Promise((resolve) => setTimeout(resolve, 5000));

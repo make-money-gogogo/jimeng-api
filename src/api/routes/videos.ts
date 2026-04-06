@@ -7,6 +7,7 @@ import {
     submitVideoGenerationAsync,
     queryVideoGenerationStatus,
     queryVideoGenerationStatusBatch,
+    queryVideoGenerationStatusBatchBySubmitIds,
     queryVideoQueueInfo,
     cancelVideoGeneration,
     DEFAULT_MODEL,
@@ -67,13 +68,24 @@ export default {
     post: {
 
         '/generations/status/batch': async (request: Request) => {
+            // 支持两种模式：
+            // { ids: string[] }        — 按 history_id（数字型字符串）批量查
+            // { submit_ids: string[] } — 按 submit_id（UUID，generate 时本地生成）批量查
             request
-                .validate('body.ids', v => _.isArray(v) && v.length > 0 && v.every(_.isString))
                 .validate('headers.authorization', _.isString);
 
             const tokens = tokenSplit(request.headers.authorization);
             const token = _.sample(tokens);
-            const { ids } = request.body;
+            const { ids, submit_ids } = request.body;
+
+            if (_.isArray(submit_ids) && submit_ids.length > 0 && submit_ids.every(_.isString)) {
+                const result = await queryVideoGenerationStatusBatchBySubmitIds(submit_ids, token);
+                return { created: util.unixTimestamp(), data: result };
+            }
+
+            if (!_.isArray(ids) || ids.length === 0 || !ids.every(_.isString)) {
+                throw new Error('请提供 ids（history_id 数组）或 submit_ids（submit_id UUID 数组）');
+            }
             const result = await queryVideoGenerationStatusBatch(ids, token);
             return {
                 created: util.unixTimestamp(),
@@ -336,6 +348,7 @@ export default {
                     created: util.unixTimestamp(),
                     object: 'video_generation_job',
                     id: job.id,
+                    submit_id: job.submit_id,
                 };
             }
 
