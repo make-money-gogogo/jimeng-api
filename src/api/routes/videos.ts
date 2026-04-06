@@ -6,6 +6,8 @@ import {
     generateVideo,
     submitVideoGenerationAsync,
     queryVideoGenerationStatus,
+    queryVideoQueueInfo,
+    cancelVideoGeneration,
     DEFAULT_MODEL,
 } from '@/api/controllers/videos.ts';
 import util from '@/lib/util.ts';
@@ -62,6 +64,36 @@ export default {
     prefix: '/v1/videos',
 
     post: {
+
+        '/generations/queue': async (request: Request) => {
+            request
+                .validate('body.ids', v => _.isArray(v) && v.length > 0 && v.every(_.isString))
+                .validate('headers.authorization', _.isString);
+
+            const tokens = tokenSplit(request.headers.authorization);
+            const token = _.sample(tokens);
+            const { ids } = request.body;
+            const result = await queryVideoQueueInfo(ids, token);
+            return {
+                created: util.unixTimestamp(),
+                data: result,
+            };
+        },
+
+        '/generations/cancel': async (request: Request) => {
+            request
+                .validate('body.id', _.isString)
+                .validate('headers.authorization', _.isString);
+
+            const tokens = tokenSplit(request.headers.authorization);
+            const token = _.sample(tokens);
+            const { id } = request.body;
+            const result = await cancelVideoGeneration(id, token);
+            return {
+                created: util.unixTimestamp(),
+                ...result,
+            };
+        },
 
         '/generations/status': async (request: Request) => {
             request

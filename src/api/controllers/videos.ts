@@ -277,6 +277,44 @@ export async function queryVideoGenerationStatus(
 }
 
 /**
+ * 批量查询视频任务排队进度（get_history_queue_info）。
+ */
+export async function queryVideoQueueInfo(
+  historyIds: string[],
+  refreshToken: string
+): Promise<Record<string, {
+  status: number;
+  queue_info: {
+    queue_idx: number;
+    priority: number;
+    queue_status: number;
+    queue_length: number;
+    polling_config: { interval_seconds: number; timeout_seconds: number };
+  } | null;
+  forecast_cost_time: { forecast_generate_cost: number; forecast_queue_cost: number } | null;
+}>> {
+  const result = await request("post", "/mweb/v1/get_history_queue_info", refreshToken, {
+    data: { history_ids: historyIds },
+  });
+  return result as any;
+}
+
+/**
+ * 取消视频生成任务（aigc_draft/cancel_generate）。
+ */
+export async function cancelVideoGeneration(
+  historyId: string,
+  refreshToken: string
+): Promise<{ success: boolean; message: string }> {
+  const result = await request("post", "/mweb/v1/aigc_draft/cancel_generate", refreshToken, {
+    data: { history_id: historyId },
+  });
+  const r = result as any;
+  const msg = r?.message ?? r?.data?.message ?? "success";
+  return { success: true, message: msg };
+}
+
+/**
  * 向即梦提交视频草稿并返回 history_record_id（内部复用）。
  */
 async function submitVideoDraftAndGetHistoryId(
