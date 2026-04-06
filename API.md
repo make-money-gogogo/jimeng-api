@@ -478,6 +478,90 @@ curl -X POST http://localhost:5100/v1/videos/generations/status \
 
 轮询建议：每 3~5 秒查询一次，Seedance 2.0 生成通常需要 2~8 分钟。
 
+### 5.3 批量查询排队进度
+
+**POST** `/v1/videos/generations/queue`
+
+批量查询多个视频任务的排队位置及预计耗时，适合在等待期间轮询进度展示。
+
+**请求体（JSON）**
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `ids` | string[] | 是 | 任务 ID 数组（即异步提交返回的 `id`） |
+
+```bash
+curl -X POST http://localhost:5100/v1/videos/generations/queue \
+  -H "Authorization: Bearer <refresh_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"ids": ["30659018551564", "30659079923212"]}'
+```
+
+**响应示例：**
+
+```json
+{
+  "created": 1711234567,
+  "data": {
+    "30659018551564": {
+      "status": 0,
+      "queue_info": {
+        "queue_idx": 20897,
+        "priority": 3,
+        "queue_status": 1,
+        "queue_length": 37123,
+        "polling_config": {
+          "interval_seconds": 30,
+          "timeout_seconds": 86400
+        }
+      },
+      "forecast_cost_time": {
+        "forecast_generate_cost": 418,
+        "forecast_queue_cost": 4353
+      }
+    }
+  }
+}
+```
+
+| 响应字段 | 说明 |
+|------|------|
+| `data.<id>.status` | 任务状态码（同 `/status` 接口） |
+| `data.<id>.queue_info.queue_idx` | 当前队列位置 |
+| `data.<id>.queue_info.queue_length` | 队列总长度 |
+| `data.<id>.queue_info.polling_config.interval_seconds` | 建议的轮询间隔（秒） |
+| `data.<id>.forecast_cost_time.forecast_queue_cost` | 预计排队等待时间（秒） |
+| `data.<id>.forecast_cost_time.forecast_generate_cost` | 预计生成耗时（秒） |
+
+### 5.4 取消视频任务
+
+**POST** `/v1/videos/generations/cancel`
+
+取消一个正在排队或生成中的视频任务。
+
+**请求体（JSON）**
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `id` | string | 是 | 要取消的任务 ID |
+
+```bash
+curl -X POST http://localhost:5100/v1/videos/generations/cancel \
+  -H "Authorization: Bearer <refresh_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"id": "30659018551564"}'
+```
+
+**响应示例：**
+
+```json
+{
+  "created": 1711234567,
+  "success": true,
+  "message": "success"
+}
+```
+
 ---
 
 ## 6. 令牌与积分
