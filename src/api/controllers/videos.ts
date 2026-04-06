@@ -277,6 +277,63 @@ export async function queryVideoGenerationStatus(
 }
 
 /**
+ * 批量查询多个视频任务状态（get_history_by_ids），并发解析视频 URL。
+ */
+export async function queryVideoGenerationStatusBatch(
+  historyIds: string[],
+  refreshToken: string
+): Promise<Record<string, {
+  id: string;
+  object: "video_generation_job";
+  status: "queued" | "processing" | "succeeded" | "failed";
+  upstream_status: number | null;
+  fail_code: string | null;
+  url: string | null;
+  data: { url: string }[];
+}>> {
+  if (historyIds.length === 0) return {};
+
+  const result = await request("post", "/mweb/v1/get_history_by_ids", refreshToken, {
+    data: { history_ids: historyIds },
+  });
+
+  const entries = await Promise.all(
+    historyIds.map(async (historyId) => {
+      const historyData = result[historyId];
+      if (!historyData) {
+        return [historyId, { id: historyId, object: "video_generation_job" as const, status: "queued" as const, upstream_status: null, fail_code: null, url: null, data: [] }] as const;
+      }
+      const st = historyData.status as number;
+      const item_list = historyData.item_list || [];
+
+      if (st === 30) {
+        return [historyId, { id: historyId, object: "video_generation_job" as const, status: "failed" as const, upstream_status: st, fail_code: historyData.fail_code ?? null, url: null, data: [] }] as const;
+      }
+
+      const itemId = item_list?.[0]?.item_id || item_list?.[0]?.id || item_list?.[0]?.local_item_id || item_list?.[0]?.common_attr?.id;
+      let url: string | null = null;
+      if (itemId) {
+        try {
+          url = await fetchHighQualityVideoUrl(String(itemId), refreshToken);
+        } catch {
+          // ignore
+        }
+      }
+      if (!url && item_list[0]) {
+        url = extractVideoUrl(item_list[0]);
+      }
+
+      if ((st === 10 || st === 50) && url) {
+        return [historyId, { id: historyId, object: "video_generation_job" as const, status: "succeeded" as const, upstream_status: st, fail_code: null, url, data: [{ url }] }] as const;
+      }
+      return [historyId, { id: historyId, object: "video_generation_job" as const, status: "processing" as const, upstream_status: st, fail_code: historyData.fail_code ?? null, url, data: url ? [{ url }] : [] }] as const;
+    })
+  );
+
+  return Object.fromEntries(entries);
+}
+
+/**
  * 批量查询视频任务排队进度（get_history_queue_info）。
  */
 export async function queryVideoQueueInfo(

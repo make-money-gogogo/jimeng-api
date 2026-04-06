@@ -6,6 +6,7 @@ import {
     generateVideo,
     submitVideoGenerationAsync,
     queryVideoGenerationStatus,
+    queryVideoGenerationStatusBatch,
     queryVideoQueueInfo,
     cancelVideoGeneration,
     DEFAULT_MODEL,
@@ -64,6 +65,21 @@ export default {
     prefix: '/v1/videos',
 
     post: {
+
+        '/generations/status/batch': async (request: Request) => {
+            request
+                .validate('body.ids', v => _.isArray(v) && v.length > 0 && v.every(_.isString))
+                .validate('headers.authorization', _.isString);
+
+            const tokens = tokenSplit(request.headers.authorization);
+            const token = _.sample(tokens);
+            const { ids } = request.body;
+            const result = await queryVideoGenerationStatusBatch(ids, token);
+            return {
+                created: util.unixTimestamp(),
+                data: result,
+            };
+        },
 
         '/generations/queue': async (request: Request) => {
             request
